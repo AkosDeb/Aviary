@@ -35,13 +35,6 @@ After execution, all outputs are stored in:
 
 ```text
 xdsm_outputs/
-    small_cargo_xdsm.tex
-    small_cargo_xdsm.tikz
-    small_cargo_xdsm.pdf
-    small_uav_xdsm.tex
-    small_uav_xdsm.tikz
-    small_uav_xdsm.pdf
-    diagram_styles.tex
 ```
 
 ---
