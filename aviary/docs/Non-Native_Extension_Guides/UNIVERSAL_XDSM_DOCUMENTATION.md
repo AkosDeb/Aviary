@@ -1,282 +1,284 @@
-# XDSM Visualization Workflow (pyXDSM + Docker LaTeX)
+# Universal XDSM Workflow
 
-## Overview
+This guide describes the Aviary XDSM workflow built around `universal_xdsm_creator.py`.
+The preferred workflow is automatic: run an Aviary/OpenMDAO optimization script, inspect
+the configured problem, and generate a high-level XDSM without writing a new case-specific
+XDSM function.
 
-This document describes the complete workflow for generating XDSM (eXtended Design Structure Matrix) diagrams using **pyXDSM** and compiling them into PDFs using a **Dockerized LaTeX environment**.
-
-The system is designed to be:
-
-* Portable across machines
-* Independent of local LaTeX installations
-* Compatible with Windows + Docker setups
-* Clean and reproducible for documentation pipelines
+The tool can also compile the generated LaTeX into a PDF using Docker and TeXLive.
 
 ---
 
-## Workflow Architecture
+## What It Creates
 
-```text
-Define MDO structure (Python)
-        ↓
-Generate .tex + .tikz (pyXDSM)
-        ↓
-Patch dependencies (diagram_styles.tex)
-        ↓
-Compile via Docker (pdflatex)
-        ↓
-Final PDF diagram
-```
-
----
-
-## File Structure
-
-After execution, all outputs are stored in:
+All generated files are written to:
 
 ```text
 xdsm_outputs/
 ```
 
----
-
-## How It Works
-
-### 1. Define Systems
-
-Each system represents a block in the XDSM:
-
-```python
-systems = {
-    "opt": ("OPT", r"\text{Optimizer}"),
-    "geo": ("FUNC", r"\text{Geometry}"),
-    "aero": ("FUNC", r"\text{Aerodynamics}"),
-}
-```
-
-Supported types:
-
-* `OPT` → Optimizer
-* `FUNC` → Functional discipline
-* `SOLVER` → Solver block
-
----
-
-### 2. Define Connections
-
-Data flow between systems:
-
-```python
-connections = {
-    ("opt", "geo"): r"S_w, b",
-    ("geo", "aero"): r"S_w, AR",
-}
-```
-
----
-
-### 3. Define Inputs / Outputs
-
-External interfaces:
-
-```python
-inputs = [("opt", r"W_{cargo}, Range")]
-outputs = [("opt", r"W_{fuel}^{*}", "RIGHT")]
-```
-
----
-
-### 4. Generate XDSM
-
-Call:
-
-```python
-create_xdsm(
-    filename="small_cargo_xdsm",
-    systems=systems,
-    connections=connections,
-    inputs=inputs,
-    outputs=outputs,
-    build_pdf=True,
-)
-```
-
----
-
-## Docker-Based PDF Compilation
-
-### Why Docker
-
-pyXDSM generates LaTeX files, but:
-
-* Local LaTeX installations are inconsistent
-* Windows paths break LaTeX imports
-* Reproducibility is poor
-
-Solution: use **Docker + TeXLive**
-
----
-
-### Command Used Internally
-
-```bash
-docker run --rm \
-  -v "<repo>/xdsm_outputs:/workdir" \
-  -w /workdir \
-  texlive/texlive \
-  pdflatex small_cargo_xdsm.tex
-```
-
----
-
-## Critical Fixes Implemented
-
-### 1. Path Issue (Windows → Docker)
-
-Problem:
-
-```latex
-\input{C:/Users/.../pyxdsm/diagram_styles}
-```
-
-Docker cannot access local Python paths.
-
-### Solution
-
-* Copy `diagram_styles.tex` locally into `xdsm_outputs/`
-* Replace absolute paths with:
-
-```latex
-\input{diagram_styles}
-```
-
----
-
-### 2. File Location Issue
-
-Problem:
-
-* pyXDSM embeds folder paths into `.tex`
-
-Solution:
-
-* Generate files in root
-* Move them into `xdsm_outputs/`
-* Patch `.tikz` references
-
----
-
-### 3. Dependency Injection
-
-Automatically copy:
+For a filename such as `small_uav_auto_xdsm`, the expected files are:
 
 ```text
-pyxdsm/diagram_styles.tex
+xdsm_outputs/small_uav_auto_xdsm.tex
+xdsm_outputs/small_uav_auto_xdsm.tikz
+xdsm_outputs/small_uav_auto_xdsm.pdf
 ```
 
-into:
+The PDF is only created when Docker is available and the command is run without
+`--no-pdf`.
+
+---
+
+## Requirements
+
+Run the tool from the same Python environment used for Aviary:
+
+```powershell
+& C:/Software/Anaconda/envs/aviary/python.exe -m pip install pyxdsm
+```
+
+For PDF output, Docker Desktop must be installed, running, and accessible from the
+terminal user.
+
+Check Docker with:
+
+```powershell
+docker info
+```
+
+---
+
+## Automatic XDSM From a Setup Script
+
+The optimization script should expose the final `AviaryProblem` object as `prob`.
+This is the common pattern:
+
+```python
+if __name__ == "__main__":
+    prob = main()
+```
+
+Then run:
+
+```powershell
+& C:/Software/Anaconda/envs/aviary/python.exe universal_xdsm_creator.py `
+  --script aviary/models/aircraft/small_uav/run_small_uav_mission.py `
+  --filename small_uav_auto_xdsm
+```
+
+To generate only `.tex` and `.tikz` and skip Docker/PDF compilation:
+
+```powershell
+& C:/Software/Anaconda/envs/aviary/python.exe universal_xdsm_creator.py `
+  --script aviary/models/aircraft/small_uav/run_small_uav_mission.py `
+  --filename small_uav_auto_xdsm `
+  --no-pdf
+```
+
+If a script stores the problem under a different global name, pass it explicitly:
+
+```powershell
+& C:/Software/Anaconda/envs/aviary/python.exe universal_xdsm_creator.py `
+  --script my_case.py `
+  --prob-name my_prob `
+  --filename my_case_auto_xdsm
+```
+
+---
+
+## Example Commands
+
+### Small UAV
+
+```powershell
+& C:/Software/Anaconda/envs/aviary/python.exe universal_xdsm_creator.py `
+  --script aviary/models/aircraft/small_uav/run_small_uav_mission.py `
+  --filename small_uav_auto_xdsm
+```
+
+### Test Aircraft
+
+```powershell
+& C:/Software/Anaconda/envs/aviary/python.exe universal_xdsm_creator.py `
+  --script aviary/models/aircraft/test_aircraft/test_aircraft_run_optimization.py `
+  --filename test_aircraft_auto_xdsm
+```
+
+### Small Cargo
+
+```powershell
+& C:/Software/Anaconda/envs/aviary/python.exe universal_xdsm_creator.py `
+  --script aviary/models/aircraft/small_cargo/run_small_cargo_optimization.py `
+  --filename small_cargo_auto_xdsm
+```
+
+Add `--no-pdf` to any command when Docker is unavailable.
+
+---
+
+## How Automatic Inference Works
+
+The automatic path runs the setup script and inspects the configured OpenMDAO model.
+It reads:
+
+* design variables
+* objectives
+* constraints
+* promoted input and output names
+* absolute OpenMDAO connections
+* subsystem paths for geometry, mass, aerodynamics, propulsion, trajectory, and post-mission logic
+
+It then groups low-level OpenMDAO systems into high-level XDSM blocks:
 
 ```text
-xdsm_outputs/diagram_styles.tex
+Optimizer
+Geometry
+Mass
+Aerodynamics
+Propulsion
+Mission / Trajectory
+Post Mission
 ```
+
+This avoids adding a new hand-written `create_my_case_xdsm()` function for each new
+aircraft or mission setup.
 
 ---
 
-## Running the Tool
+## Docker PDF Compilation
 
-From repository root:
+When PDF output is enabled, the tool runs a Dockerized TeXLive command similar to:
 
-```bash
-python universal_xdsm_creator.py
+```powershell
+docker run --rm `
+  -v C:\Software\Repository\Aviary_clean\xdsm_outputs:/workdir `
+  -w /workdir `
+  texlive/texlive `
+  pdflatex small_uav_auto_xdsm.tex
 ```
+
+The Docker container sees `xdsm_outputs/` as `/workdir`, compiles the `.tex`, and writes
+the PDF back into `xdsm_outputs/`.
+
+The tool also copies `diagram_styles.tex` into `xdsm_outputs/` so LaTeX does not depend
+on an absolute Python site-package path.
 
 ---
 
-## Adding New XDSM Cases
+## Manual XDSM Definitions
 
-Define a new function:
+Manual case functions are still supported for custom diagrams. Define systems,
+connections, inputs, and outputs, then call `create_xdsm()`:
 
 ```python
 def create_my_case():
-    systems = {...}
-    connections = {...}
-    inputs = [...]
-    outputs = [...]
+    systems = {
+        "opt": ("OPT", r"\text{Optimizer}"),
+        "geo": ("FUNC", r"\text{Geometry}"),
+        "aero": ("FUNC", r"\text{Aerodynamics}"),
+    }
+
+    connections = {
+        ("opt", "geo"): r"S_w, b",
+        ("geo", "aero"): r"S_w, AR",
+    }
+
+    inputs = [("opt", r"W_{cargo}, R", "LEFT")]
+    outputs = [("opt", r"J^*", "RIGHT")]
 
     create_xdsm(
-        filename="my_case",
+        filename="my_case_xdsm",
         systems=systems,
         connections=connections,
         inputs=inputs,
         outputs=outputs,
+        build_pdf=True,
     )
 ```
 
----
+To generate the legacy hard-coded examples:
 
-## Design Principles
-
-### Centralized Logic
-
-* All generation and compilation happens inside `create_xdsm()`
-
-### Separation of Concerns
-
-* Case functions define only data
-* Core handles execution
-
-### Reproducibility
-
-* No dependency on local LaTeX
-* Docker ensures consistent builds
-
-### Portability
-
-* Works across machines without configuration
+```powershell
+& C:/Software/Anaconda/envs/aviary/python.exe universal_xdsm_creator.py --examples
+```
 
 ---
 
 ## Troubleshooting
 
-### Error: `diagram_styles.tex not found`
+### `pyXDSM is not installed`
 
-Cause:
+Install `pyxdsm` into the same environment used to run the tool:
 
-* pyXDSM path not patched
-
-Fix:
-
-* Ensure file exists in `xdsm_outputs/`
-
----
-
-### Docker fails
-
-Check:
-
-```bash
-docker run hello-world
+```powershell
+& C:/Software/Anaconda/envs/aviary/python.exe -m pip install pyxdsm
 ```
 
----
+Installing with plain `pip install pyxdsm` may install into a different Python.
 
-### No PDF generated
+### Docker Cannot Connect
 
-Check `.log` file:
+Typical error:
 
 ```text
-xdsm_outputs/small_cargo_xdsm.log
+failed to connect to the docker API
+permission denied while trying to connect to the docker API
 ```
+
+Fixes:
+
+* Start Docker Desktop.
+* Wait until Docker Desktop reports that it is running.
+* Run `docker info` from the same terminal.
+* Make sure the terminal user belongs to Docker's allowed user group.
+
+If Docker is unavailable, rerun with:
+
+```powershell
+--no-pdf
+```
+
+The `.tex` and `.tikz` files will still be generated.
+
+### No PDF Generated
+
+Check whether the PDF exists:
+
+```powershell
+Get-ChildItem xdsm_outputs/*auto_xdsm*
+```
+
+If only `.tex` and `.tikz` exist, Docker or LaTeX compilation failed.
+
+You can manually compile an existing generated file once Docker is running:
+
+```powershell
+docker run --rm `
+  -v C:\Software\Repository\Aviary_clean\xdsm_outputs:/workdir `
+  -w /workdir `
+  texlive/texlive `
+  pdflatex small_uav_auto_xdsm.tex
+```
+
+### `diagram_styles.tex not found`
+
+Make sure `xdsm_outputs/diagram_styles.tex` exists. The tool copies it automatically
+from the installed `pyxdsm` package.
 
 ---
 
 ## Summary
 
-This system provides a fully automated pipeline:
+The automatic workflow is:
 
-* Define MDO system → Python
-* Generate XDSM → pyXDSM
-* Fix dependencies → internal patching
-* Compile → Docker LaTeX
-* Output → PDF ready for documentation
+```text
+Aviary setup script
+  -> configured OpenMDAO problem
+  -> inferred high-level XDSM
+  -> .tex and .tikz
+  -> optional Docker PDF
+```
 
-No manual LaTeX handling required.
+This keeps XDSM generation reusable across aircraft and mission scripts without
+adding custom XDSM code to each setup.
