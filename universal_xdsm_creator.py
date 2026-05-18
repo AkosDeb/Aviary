@@ -240,7 +240,9 @@ def create_xdsm_from_script(
     """
     Execute an optimization script and create an XDSM from its global problem object.
 
-    This works naturally with Aviary example scripts that end with:
+    Prefer a lightweight script hook named build_xdsm_problem() so the model can be
+    assembled for XDSM without running the full optimization. It also works with
+    Aviary example scripts that end with:
         if __name__ == "__main__":
             prob = main()
     """
@@ -252,8 +254,14 @@ def create_xdsm_from_script(
         )
 
     script_path = Path(script_path)
-    namespace = runpy.run_path(str(script_path), run_name="__main__")
-    prob = namespace.get(prob_name)
+    namespace = runpy.run_path(str(script_path), run_name="__xdsm__")
+
+    build_xdsm_problem = namespace.get("build_xdsm_problem")
+    if build_xdsm_problem is not None:
+        prob = build_xdsm_problem()
+    else:
+        namespace = runpy.run_path(str(script_path), run_name="__main__")
+        prob = namespace.get(prob_name)
 
     if prob is None:
         raise RuntimeError(

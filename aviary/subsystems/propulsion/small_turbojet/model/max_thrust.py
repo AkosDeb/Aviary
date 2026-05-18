@@ -5,7 +5,6 @@ from aviary.variable_info.variables import Aircraft
 
 # ---------------------------------------------------------------------------
 # Scaler statistics from model training (MultiLinear, then StandardScaler).
-# Replace placeholder values with actual mu/sigma from your scaler.
 # ---------------------------------------------------------------------------
 _MU_W  = 4.52688157895;    _SIG_W  = 5.11277056154    # weight_kg
 _MU_D  = 138.640131579;    _SIG_D  = 50.2073044721    # diameter_mm

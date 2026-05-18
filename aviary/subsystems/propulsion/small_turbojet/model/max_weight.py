@@ -5,8 +5,6 @@ from aviary.subsystems.propulsion.small_turbojet.variables import SmallTurbojetV
 
 # ---------------------------------------------------------------------------
 # Scaler statistics from model training (MultiPoly deg=2, then StandardScaler).
-# Replace placeholder values with actual mu/sigma from your scaler.
-# Feature order matches the polynomial expansion over (diameter_mm, length_mm, rpm_max).
 # ---------------------------------------------------------------------------
 _MU_L2  = 131007.490658;    _SIG_L2  = 102217.058419    # length_mm^2
 _MU_DL  = 53010.8859211;    _SIG_DL  = 40724.6216575    # diameter_mm * length_mm

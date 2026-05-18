@@ -99,15 +99,17 @@ class SmallTurbojetModel(EngineModel):
 
     def get_design_vars(self, aviary_inputs=None):
         return {
-            SmallTurbojetVariables.DIAMETER: {
+            f'pre_mission.propulsion.{SmallTurbojetVariables.DIAMETER}': {
                 'units': 'm',
                 'lower': 0.05,
                 'upper': 0.272,
+                'ref': 0.15,
             },
-            SmallTurbojetVariables.LENGTH: {
+            f'pre_mission.propulsion.{SmallTurbojetVariables.LENGTH}': {
                 'units': 'm',
                 'lower': 0.150,
                 'upper': 0.75,
+                'ref': 0.45,
             },
         }
 

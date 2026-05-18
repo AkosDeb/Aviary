@@ -5,9 +5,6 @@ from aviary.subsystems.propulsion.small_turbojet.variables import SmallTurbojetV
 
 # ---------------------------------------------------------------------------
 # Scaler statistics from model training (MultiPoly deg=2, then StandardScaler).
-# Features are constructed in mm from the raw diameter_mm and length_mm inputs,
-# then each polynomial term is standardized: z(x) = (x - mu) / sigma.
-# Replace the placeholder values below with the actual mu/sigma from your scaler.
 # ---------------------------------------------------------------------------
 _MU_D   = 137.51875;      _SIG_D   = 50.4461425113
 _MU_D2  = 21456.2198958;  _SIG_D2  = 17069.300497

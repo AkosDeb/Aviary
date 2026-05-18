@@ -198,4 +198,4 @@ settings:aerodynamics_method,FLOPS
 settings:mass_method,FLOPS
 settings:problem_type,fallout
 aircraft:design:use_alt_mass,True,unitless
-aircraft:design:empty_mass,3.5,kg
+aircraft:design:empty_mass,7.0,kg
