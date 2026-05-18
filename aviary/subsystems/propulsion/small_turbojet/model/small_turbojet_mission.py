@@ -26,7 +26,6 @@ class SmallTurbojetMission(om.ExplicitComponent):
             units='unitless',
         )
         self.add_input(Aircraft.Engine.SCALED_SLS_THRUST, val=350.0, units='N')
-        self.add_input(SmallTurbojetVariables.EGT, val=900.0, units='K')
         self.add_input(SmallTurbojetVariables.SFC, val=3.0e-5, units='kg/(N*s)')
 
         self.add_output(Dynamic.Vehicle.Propulsion.THRUST, val=np.zeros(nn), units='N')
@@ -36,7 +35,6 @@ class SmallTurbojetMission(om.ExplicitComponent):
             val=np.zeros(nn),
             units='kg/s',
         )
-        self.add_output(Dynamic.Vehicle.Propulsion.TEMPERATURE_T4, val=np.zeros(nn), units='K')
 
         rows = np.arange(nn)
         cols = np.arange(nn)
@@ -79,26 +77,17 @@ class SmallTurbojetMission(om.ExplicitComponent):
             rows=rows,
             cols=scalar_cols,
         )
-        self.declare_partials(
-            Dynamic.Vehicle.Propulsion.TEMPERATURE_T4,
-            SmallTurbojetVariables.EGT,
-            rows=rows,
-            cols=scalar_cols,
-            val=1.0,
-        )
 
     def compute(self, inputs, outputs):
         throttle = inputs[Dynamic.Vehicle.Propulsion.THROTTLE]
         max_thrust = inputs[Aircraft.Engine.SCALED_SLS_THRUST]
         sfc = inputs[SmallTurbojetVariables.SFC]
-        egt = inputs[SmallTurbojetVariables.EGT]
 
         thrust = throttle * max_thrust
 
         outputs[Dynamic.Vehicle.Propulsion.THRUST] = thrust
         outputs[Dynamic.Vehicle.Propulsion.THRUST_MAX] = max_thrust
         outputs[Dynamic.Vehicle.Propulsion.FUEL_FLOW_RATE_NEGATIVE] = -thrust * sfc
-        outputs[Dynamic.Vehicle.Propulsion.TEMPERATURE_T4] = egt
 
     def compute_partials(self, inputs, partials):
         throttle = inputs[Dynamic.Vehicle.Propulsion.THROTTLE]

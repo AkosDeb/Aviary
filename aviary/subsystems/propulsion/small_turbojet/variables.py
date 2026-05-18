@@ -1,6 +1,6 @@
 class SmallTurbojetVariables:
     DIAMETER = 'small_turbojet:diameter'
     LENGTH = 'small_turbojet:length'
+    MAX_RPM = 'small_turbojet:max_rpm'
     MASS = 'small_turbojet:mass'
-    EGT = 'small_turbojet:egt'
     SFC = 'small_turbojet:sfc'

@@ -60,7 +60,6 @@ class SmallTurbojetModel(EngineModel):
 
         max_thrust = prob.get_val(Aircraft.Engine.SCALED_SLS_THRUST, units='N')
         mass = prob.get_val(SmallTurbojetVariables.MASS, units='kg')
-        egt = prob.get_val(SmallTurbojetVariables.EGT, units='K')
         sfc = prob.get_val(SmallTurbojetVariables.SFC, units='kg/(N*s)')
         thrust = prob.get_val(Dynamic.Vehicle.Propulsion.THRUST, units='N')
         fuel_flow = prob.get_val(
@@ -71,7 +70,6 @@ class SmallTurbojetModel(EngineModel):
         checks = {
             Aircraft.Engine.SCALED_SLS_THRUST: max_thrust,
             SmallTurbojetVariables.MASS: mass,
-            SmallTurbojetVariables.EGT: egt,
             SmallTurbojetVariables.SFC: sfc,
             Dynamic.Vehicle.Propulsion.THRUST: thrust,
             Dynamic.Vehicle.Propulsion.FUEL_FLOW_RATE_NEGATIVE: fuel_flow,
@@ -86,8 +84,6 @@ class SmallTurbojetModel(EngineModel):
             raise RuntimeError('SmallTurbojetModel precheck failed: max thrust must be positive.')
         if np.any(mass <= 0.0):
             raise RuntimeError('SmallTurbojetModel precheck failed: engine mass must be positive.')
-        if np.any(egt <= 0.0):
-            raise RuntimeError('SmallTurbojetModel precheck failed: EGT must be positive.')
         if np.any(sfc <= 0.0):
             raise RuntimeError('SmallTurbojetModel precheck failed: SFC must be positive.')
         if not np.all(np.diff(thrust) >= 0.0):
@@ -116,16 +112,17 @@ class SmallTurbojetModel(EngineModel):
         }
 
     def get_parameters(self, aviary_inputs=None, user_options=None, subsystem_options=None):
+        return {}
+
+    def get_pre_mission_bus_variables(self, aviary_inputs=None, mission_info=None):
         return {
-            SmallTurbojetVariables.DIAMETER: {
-                'val': 0.3,
-                'units': 'm',
-                'static_target': True,
+            Aircraft.Engine.SCALED_SLS_THRUST: {
+                'mission_name': Aircraft.Engine.SCALED_SLS_THRUST,
+                'units': 'N',
             },
-            SmallTurbojetVariables.LENGTH: {
-                'val': 0.45,
-                'units': 'm',
-                'static_target': True,
+            SmallTurbojetVariables.SFC: {
+                'mission_name': SmallTurbojetVariables.SFC,
+                'units': 'kg/(N*s)',
             },
         }
 
@@ -134,5 +131,4 @@ class SmallTurbojetModel(EngineModel):
             Dynamic.Vehicle.Propulsion.THRUST,
             Dynamic.Vehicle.Propulsion.THRUST_MAX,
             Dynamic.Vehicle.Propulsion.FUEL_FLOW_RATE_NEGATIVE,
-            Dynamic.Vehicle.Propulsion.TEMPERATURE_T4,
         ]

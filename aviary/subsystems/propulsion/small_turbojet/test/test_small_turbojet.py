@@ -33,6 +33,33 @@ class TestSmallTurbojet(unittest.TestCase):
 
         self.assertFalse(engine._precheck_complete)
 
+    def test_builder_design_vars_and_bus(self):
+        engine = SmallTurbojetModel(run_precheck=False)
+
+        design_vars = engine.get_design_vars()
+        self.assertEqual(
+            set(design_vars),
+            {SmallTurbojetVariables.DIAMETER, SmallTurbojetVariables.LENGTH},
+        )
+        self.assertEqual(engine.get_parameters(), {})
+
+        bus_vars = engine.get_pre_mission_bus_variables()
+        self.assertEqual(
+            set(bus_vars),
+            {
+                Aircraft.Engine.SCALED_SLS_THRUST,
+                SmallTurbojetVariables.SFC,
+            },
+        )
+        self.assertEqual(
+            bus_vars[Aircraft.Engine.SCALED_SLS_THRUST]['mission_name'],
+            Aircraft.Engine.SCALED_SLS_THRUST,
+        )
+        self.assertEqual(
+            bus_vars[SmallTurbojetVariables.SFC]['mission_name'],
+            SmallTurbojetVariables.SFC,
+        )
+
     @use_tempdirs
     def test_premission_regressions(self):
         prob = om.Problem()
@@ -46,22 +73,22 @@ class TestSmallTurbojet(unittest.TestCase):
 
         assert_near_equal(
             prob.get_val(Aircraft.Engine.SCALED_SLS_THRUST, units='N'),
-            353.4291735288517,
+            401.373473537979,
             tolerance=1e-12,
         )
         assert_near_equal(
             prob.get_val(SmallTurbojetVariables.MASS, units='kg'),
-            9.542587685278995,
+            5.10023850489127,
             tolerance=1e-12,
         )
         assert_near_equal(
-            prob.get_val(SmallTurbojetVariables.EGT, units='K'),
-            910.0,
+            prob.get_val(SmallTurbojetVariables.MAX_RPM, units='rpm'),
+            81451.765791041,
             tolerance=1e-12,
         )
         assert_near_equal(
             prob.get_val(SmallTurbojetVariables.SFC, units='kg/(N*s)'),
-            3.065e-5,
+            4.03132702439889e-5,
             tolerance=1e-12,
         )
 
@@ -84,8 +111,8 @@ class TestSmallTurbojet(unittest.TestCase):
 
         prob.run_model()
 
-        thrust_max = 353.4291735288517
-        sfc = 3.065e-5
+        thrust_max = 401.373473537979
+        sfc = 4.03132702439889e-5
         thrust = throttle * thrust_max
 
         assert_near_equal(
@@ -103,12 +130,6 @@ class TestSmallTurbojet(unittest.TestCase):
             -thrust * sfc,
             tolerance=1e-12,
         )
-        assert_near_equal(
-            prob.get_val(Dynamic.Vehicle.Propulsion.TEMPERATURE_T4, units='K'),
-            np.full(nn, 910.0),
-            tolerance=1e-12,
-        )
-
         partial_data = prob.check_partials(out_stream=None, method='cs')
         assert_check_partials(partial_data, atol=1e-12, rtol=1e-12)
 
