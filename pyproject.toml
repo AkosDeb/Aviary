@@ -49,6 +49,9 @@ include = [
     "/aviary",
 ]
 
+[tool.pytest.ini_options]
+cache_dir = "_aviary_pytest_cache"
+
 [tool.ruff]
 line-length = 100
 
