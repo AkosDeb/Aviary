@@ -53,8 +53,7 @@ class SmallTurbojetModel(EngineModel):
         )
 
         prob.setup()
-        prob.set_val(SmallTurbojetVariables.DIAMETER, 0.15, units='m')
-        prob.set_val(SmallTurbojetVariables.LENGTH, 0.45, units='m')
+        prob.set_val(Aircraft.Engine.SCALED_SLS_THRUST, 394.0, units='N')
         prob.set_val(Dynamic.Vehicle.Propulsion.THROTTLE, throttle)
         prob.run_model()
 
@@ -99,17 +98,11 @@ class SmallTurbojetModel(EngineModel):
 
     def get_design_vars(self, aviary_inputs=None):
         return {
-            f'pre_mission.propulsion.{SmallTurbojetVariables.DIAMETER}': {
-                'units': 'm',
-                'lower': 0.05,
-                'upper': 0.272,
-                'ref': 0.15,
-            },
-            f'pre_mission.propulsion.{SmallTurbojetVariables.LENGTH}': {
-                'units': 'm',
-                'lower': 0.150,
-                'upper': 0.75,
-                'ref': 0.45,
+            f'pre_mission.propulsion.{Aircraft.Engine.SCALED_SLS_THRUST}': {
+                'units': 'N',
+                'lower': 20.0,
+                'upper': 2000.0,
+                'ref': 394.0,
             },
         }
 
