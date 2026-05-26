@@ -98,7 +98,10 @@ class SmallTurbojetModel(EngineModel):
 
     def get_design_vars(self, aviary_inputs=None):
         return {
-            f'pre_mission.propulsion.{Aircraft.Engine.SCALED_SLS_THRUST}': {
+            (
+                f'pre_mission.propulsion.{self.name}.design_vars.'
+                f'{Aircraft.Engine.SCALED_SLS_THRUST}'
+            ): {
                 'units': 'N',
                 'lower': 20.0,
                 'upper': 2000.0,

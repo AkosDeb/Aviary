@@ -41,7 +41,12 @@ class TestSmallTurbojet(unittest.TestCase):
         design_vars = engine.get_design_vars()
         self.assertEqual(
             set(design_vars),
-            {f'pre_mission.propulsion.{Aircraft.Engine.SCALED_SLS_THRUST}'},
+            {
+                (
+                    'pre_mission.propulsion.small_turbojet.design_vars.'
+                    f'{Aircraft.Engine.SCALED_SLS_THRUST}'
+                ),
+            },
         )
         self.assertEqual(engine.get_parameters(), {})
 

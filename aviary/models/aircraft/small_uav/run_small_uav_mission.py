@@ -1,4 +1,5 @@
 import csv
+import os
 import shutil
 import sys
 import warnings
@@ -9,6 +10,10 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[4]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+# OpenMDAO tries to import mpi4py when this is unset. Keep this standalone
+# example serial unless the caller explicitly requests MPI.
+os.environ.setdefault("OPENMDAO_USE_MPI", "0")
 
 import aviary.api as av
 from aviary.subsystems.propulsion.small_turbojet import (
@@ -257,7 +262,7 @@ def build_xdsm_problem():
 def main():
     print("\n" + "=" * 70)
     print("SMALL UAV RANGE OPTIMIZATION")
-    print("  Design variables: wing span, turbojet diameter, turbojet length")
+    print("  Design variables: wing span, scaled SLS thrust")
     print("  Objective       : maximize range")
     print("  Method          : IPOPT gradient-based")
     print("=" * 70 + "\n")
@@ -286,11 +291,6 @@ def main():
     print_result(
         "Diameter",
         safe_get(prob, premission_propulsion_var(SmallTurbojetVariables.DIAMETER), "m"),
-        "m",
-    )
-    print_result(
-        "Length",
-        safe_get(prob, premission_propulsion_var(SmallTurbojetVariables.LENGTH), "m"),
         "m",
     )
     print_result(
