@@ -18,7 +18,7 @@ aircraft:crew_and_payload:design:num_passengers,0,unitless
 aircraft:crew_and_payload:design:num_economy_class,0,unitless
 aircraft:crew_and_payload:flight_crew_mass_scaler,0.0,unitless
 aircraft:crew_and_payload:mass_per_passenger,0,kg
-aircraft:crew_and_payload:misc_cargo,2.5,kg
+aircraft:crew_and_payload:misc_cargo,0.5,kg
 aircraft:crew_and_payload:cabin_crew_mass_scaler,0,unitless
 aircraft:crew_and_payload:num_business_class,0,unitless
 aircraft:crew_and_payload:num_first_class,0,unitless

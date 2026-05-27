@@ -619,10 +619,12 @@ def create_optimization_history_plot(case_recorder, df):
     # make the legend items in Python. Pass them to JavaScript where they can
     # be added to the Legend
     legend_items = []
+    variable_metadata = case_recorder.problem_metadata.get('variables', {})
     for variable_name in variable_names:
-        units = case_recorder.problem_metadata['variables'][variable_name]['units']
+        units = variable_metadata.get(variable_name, {}).get('units', None)
+        units_label = f' ({units})' if units else ''
         legend_item = LegendItem(
-            label=f'{variable_name} ({units})', renderers=[renderers[variable_name]]
+            label=f'{variable_name}{units_label}', renderers=[renderers[variable_name]]
         )
         legend_items.append(legend_item)
 
@@ -952,21 +954,31 @@ def create_payload_range_frame(title, results_tabs_list, documentation, csv_file
     """
     if os.path.isfile(csv_filepath):
         df = pd.read_csv(csv_filepath, skipinitialspace=True)
+        if 'Range (km)' in df.columns and 'Payload (kg)' in df.columns:
+            range_col = 'Range (km)'
+            payload_col = 'Payload (kg)'
+            range_label = 'Range (km)'
+            payload_label = 'Payload (kg)'
+        else:
+            range_col = 'Range (NM)'
+            payload_col = 'Payload (lbm)'
+            range_label = 'Range (NM)'
+            payload_label = 'Payload (lbs)'
         # column data source for hover
         source = ColumnDataSource(
-            data=dict(x=df['Range (NM)'], y=df['Payload (lbm)'], point_name=df['Mission Name'])
+            data=dict(x=df[range_col], y=df[payload_col], point_name=df['Mission Name'])
         )
 
         # Create Bokeh figure with hover tool
         p = figure(
             title='Aircraft Payload-Range Envelope',
-            x_axis_label='Range (NM)',
-            y_axis_label='Payload (lbs)',
+            x_axis_label=range_label,
+            y_axis_label=payload_label,
             width=600,
             height=400,
             tools=['pan,wheel_zoom, hover, box_zoom,reset,save'],
         )
-        p.hover.tooltips = [('Point', '@point_name'), ('Range (NM)', '@x'), ('Payload (lbs)', '@y')]
+        p.hover.tooltips = [('Point', '@point_name'), (range_label, '@x'), (payload_label, '@y')]
         # Add scatter points
         p.scatter('x', 'y', size=10, color='rgb(0, 212, 169)', source=source)
 

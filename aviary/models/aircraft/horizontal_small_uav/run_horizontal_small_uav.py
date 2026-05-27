@@ -16,7 +16,10 @@ if str(REPO_ROOT) not in sys.path:
 os.environ.setdefault('OPENMDAO_USE_MPI', '0')
 
 import aviary.api as av
-from phase_info import MAX_TAKEOFF_MASS_KG, phase_info
+try:
+    from .phase_info import MAX_TAKEOFF_MASS_KG, phase_info
+except ImportError:
+    from phase_info import MAX_TAKEOFF_MASS_KG, phase_info
 
 from aviary.subsystems.propulsion.small_turbojet import (
     SmallTurbojetModel,
@@ -34,7 +37,9 @@ HORIZONTAL_TAIL_AC_DISTANCE_FROM_NOSE = 0.88
 HORIZONTAL_TAIL_EFFECTIVENESS = 0.18
 STATIC_MARGIN_TARGET = 0.05
 STATIC_MARGIN_BOUNDS = (0.03, 0.10)
-OUTPUT_DIR = REPO_ROOT / 'run_horizontal_small_uav_out'
+OUTPUT_ROOT = REPO_ROOT / 'outputs'
+PROBLEM_NAME = 'run_horizontal_small_uav'
+OUTPUT_DIR = OUTPUT_ROOT / f'{PROBLEM_NAME}_out'
 AVAILABLE_FUEL = 'horizontal_small_uav:available_fuel'
 FUEL_BUDGET_MARGIN = 'horizontal_small_uav:fuel_budget_margin'
 
@@ -196,7 +201,12 @@ def write_payload_range_report(prob):
     with csv_path.open('w', newline='') as stream:
         writer = csv.DictWriter(
             stream,
-            fieldnames=['Mission Name', 'Payload (kg)', 'Fuel (kg)', 'Range (km)'],
+            fieldnames=[
+                'Mission Name',
+                'Payload (kg)',
+                'Fuel (kg)',
+                'Range (km)',
+            ],
         )
         writer.writeheader()
         writer.writerows(rows)
@@ -204,11 +214,24 @@ def write_payload_range_report(prob):
     return csv_path
 
 
+def remove_dashboard_incompatible_recorder(prob):
+    """Avoid a dashboard crash on custom promoted design-variable metadata."""
+    opt_history_path = Path(prob.get_outputs_dir()) / 'optimization_history.db'
+    if opt_history_path.exists():
+        opt_history_path.unlink()
+
+
 def build_problem():
+    OUTPUT_ROOT.mkdir(exist_ok=True)
     if OUTPUT_DIR.exists():
         shutil.rmtree(OUTPUT_DIR)
 
-    prob = av.AviaryProblem(problem_type=av.ProblemType.FALLOUT, verbosity=av.Verbosity.VERBOSE)
+    prob = av.AviaryProblem(
+        problem_type=av.ProblemType.FALLOUT,
+        verbosity=av.Verbosity.VERBOSE,
+        name=PROBLEM_NAME,
+        work_dir=OUTPUT_ROOT,
+    )
     prob.load_inputs(aircraft_data=AIRCRAFT_DATA, phase_info=phase_info)
     prob.load_external_subsystems([SmallTurbojetModel()])
 
@@ -287,7 +310,7 @@ def main():
     print('\n' + '=' * 70)
     print('HORIZONTAL-TAIL SMALL UAV RANGE OPTIMIZATION')
     print('  Layout          : wing + horizontal tail + small turbojet')
-    print('  Design variables: wing span, scaled SLS thrust')
+    print('  Design variables: wing span, scaled SLS thrust, wing AC location, phase Mach schedules')
     print('  Objective       : maximize range')
     print('  Method          : IPOPT gradient-based')
     print('=' * 70 + '\n')
@@ -298,6 +321,7 @@ def main():
         warnings.simplefilter('ignore', RuntimeWarning)
         prob.run_aviary_problem()
 
+    remove_dashboard_incompatible_recorder(prob)
     payload_range_csv = write_payload_range_report(prob)
 
     print('\n' + '=' * 70)

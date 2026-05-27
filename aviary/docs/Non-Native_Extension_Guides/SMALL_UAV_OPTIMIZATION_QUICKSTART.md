@@ -229,12 +229,22 @@ Run from the repository root:
   aviary/models/aircraft/my_small_uav/run_my_small_uav.py
 ```
 
+For small UAV examples, keep the final printed report and custom CSV reports in SI
+units (`m`, `kg`, `N`, `km`) unless you have a specific reason to publish another
+unit system.
+
 ## 11. Open Results In The Dashboard
 
 After a successful run, Aviary writes an output folder like:
 
 ```text
 run_my_small_uav_out/
+```
+
+Some examples put this inside `outputs/`, for example:
+
+```text
+outputs/run_my_small_uav_out/
 ```
 
 Open the dashboard with:
@@ -247,6 +257,14 @@ If the command is not on your PATH, use the environment Python/Scripts version:
 
 ```powershell
 & C:/Software/Anaconda/envs/aviary/Scripts/aviary.exe dashboard run_my_small_uav
+```
+
+For examples with custom subsystems from your working tree, put the repository on
+`PYTHONPATH` first:
+
+```powershell
+$env:PYTHONPATH = (Get-Location).Path
+& C:/Software/Anaconda/envs/aviary/Scripts/aviary.exe dashboard outputs/run_my_small_uav_out
 ```
 
 The dashboard lets you inspect reports, N2, optimizer output, trajectory results, and

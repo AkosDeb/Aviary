@@ -21,7 +21,7 @@ run_horizontal_small_uav.py   Optimization runner
 README.md                     This guide
 ```
 
-## Run
+## Run Without Dashboard
 
 From the repository root:
 
@@ -33,9 +33,28 @@ From the repository root:
 Outputs are written to:
 
 ```text
-run_horizontal_small_uav_out/
+outputs/run_horizontal_small_uav_out/
+```
+
+The terminal summary and the generated `payload_range_data.csv` report use SI units
+such as `m`, `m**2`, `kg`, `N`, and `km`.
+
+## Run With Dashboard
+
+Run the case first:
+
+```powershell
+& C:/Software/Anaconda/envs/aviary/python.exe `
+  aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py
+```
+
+Then open the dashboard from the repository root after `outputs/run_horizontal_small_uav_out` has been generated:
+
+```powershell
+$env:PYTHONPATH = (Get-Location).Path
+& C:/Software/Anaconda/envs/aviary/Scripts/aviary.exe dashboard outputs/run_horizontal_small_uav_out
 ```
 
 The script runs a fallout range optimization with wing span and scaled SLS thrust as
 design variables. The Dymos phase setup lives in `phase_info.py` so the runner stays
-focused on problem setup, execution, and reporting.
+focused on problem setup, execution, and SI-unit reporting.

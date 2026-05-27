@@ -161,6 +161,10 @@ n2.html
 input_list.txt
 output_list.txt
 
+# Local run outputs
+outputs/*
+!outputs/.gitkeep
+
 # Windows downloads
 *:Zone.Identifier
 
