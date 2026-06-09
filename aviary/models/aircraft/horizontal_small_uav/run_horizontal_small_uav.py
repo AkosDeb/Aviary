@@ -17,20 +17,19 @@ os.environ.setdefault('OPENMDAO_USE_MPI', '0')
 import aviary.api as av
 
 try:
-    from .phase_info import MAX_TAKEOFF_MASS_KG, phase_info
+    from .phase_info import MAX_TAKEOFF_MASS_KG, DASH_MACH, phase_info
 except ImportError:
-    from phase_info import MAX_TAKEOFF_MASS_KG, phase_info
+    from phase_info import MAX_TAKEOFF_MASS_KG, DASH_MACH, phase_info
 
 from aviary.subsystems.propulsion.small_turbojet import (
     SmallTurbojetModel,
     SmallTurbojetVariables,
 )
 from aviary.subsystems.geometry.flops_based.htail_geometry import HTailGeometry
-from aviary.subsystems.aerodynamics.flops_based.cy_beta_vtp import CyBetaVtp, CyDeltaRudder
-from aviary.subsystems.aerodynamics.flops_based.lift_curve_slope import (
-    ScholzWingletARCorrection,
-    LiftCurveSlopePolhamus,
-)
+from aviary.subsystems.geometry.flops_based.cg_estimator import CGEstimatorGroup
+from aviary.subsystems.aerodynamics.flops_based.airfoil_data import NACA_0012, NACA_4415
+from aviary.subsystems.aerodynamics.flops_based.surface_config import SurfaceConfig
+from aviary.subsystems.aerodynamics.flops_based.lifting_surface import WingSurface, VTPSurface
 from aviary.subsystems.aerodynamics.flops_based.lateral_load_factor import (
     LateralLoadFactor,
     LongitudinalLoadFactor,
@@ -79,13 +78,101 @@ VTP_SPAN_UPPER_M   = 0.60
 K_WL          = 2.45  # winglet effectiveness penalty factor (Scholz 2018)
 SPLIT_PENALTY = 0.90  # H-tail symmetric VTPs extend up+down: 90% of standard winglet
 
+# ── Airfoil selection per surface ─────────────────────────────────────────────
+# cl_alpha_per_rad is the INCOMPRESSIBLE (M~0) 2-D value.
+# Polhamus handles 3-D compressibility via beta=sqrt(1-M^2) internally.
+# Source: Abbott & von Doenhoff (1959); XFOIL at Re~2e6.
+WING_AIRFOIL = NACA_4415   # cambered 15 % chord -- structural depth, CL_max at Re~2e6
+VTP_AIRFOIL  = NACA_0012   # symmetric 12 % chord -- lateral stability and control
+
+# Wing section t/c is the OpenMDAO airfoil-section value used by MachCriticalComp.
+# Keep aircraft:wing:thickness_to_chord fixed in the CSV for now so FLOPS weights
+# remain unchanged while we test the M_crit constraint.
+WING_TC_INITIAL = WING_AIRFOIL.tc_ratio
+WING_TC_LOWER   = 0.08
+WING_TC_UPPER   = 0.18
+
+# ── Surface aerodynamic configurations ────────────────────────────────────────
+WING_SURFACE_CFG = SurfaceConfig(
+    name='wing',
+    airfoil=WING_AIRFOIL,
+    endplate_correction=True,
+    k_wl=K_WL,
+    split_penalty=SPLIT_PENALTY,
+    fuselage_diameter=FUSELAGE_EQUIV_DIAMETER_M,
+)
+VTP_SURFACE_CFG = SurfaceConfig(
+    name='vtp',
+    airfoil=VTP_AIRFOIL,
+    has_control_surface=True,
+)
+
 # ── Constraint lower bounds ───────────────────────────────────────────────────
 NY_MIN = 7.0
 NZ_MIN = 7.0
 TW_MIN = 1.5   # T/W at SLS
 
+# ── Alpha max for Nz and M_DD constraints ────────────────────────────────────
+# Both LongitudinalLoadFactor (Nz) and MachCriticalComp (M_DD check) use the same
+# alpha so their constraints stay consistent.  Replace with StallAlphaComp output
+# when stall-angle prediction is implemented (see TOOD.md).
+ALPHA_MAX_DEG = 12.0
+
+# ── M_crit safety check ───────────────────────────────────────────────────────
+# Constraint: M_crit >= DASH_MACH + M_CRIT_SAFETY_MARGIN
+#   M_CRIT_SAFETY_MARGIN = 0.05 keeps the design 50 Mach-counts below sonic onset.
+#   NOTE: CL is computed as CL_alpha_3D * alpha_max_rad (same as Nz).  This is a
+#   conservative estimate -- at DASH_MACH the actual CL~0.03, not CL_max~1.0.
+#   With NACA 4415 (t/c=0.15) and CL~1.0, baseline M_crit ~0.53 which is below
+#   the 0.57 check -- the constraint will show as ACTIVE/VIOLATED until t/c becomes
+#   a DV or alpha_max is reduced.  See TOOD.md 'alpha_max / CL_max from stall'.
+M_CRIT_SAFETY_MARGIN = 0.05
+MACH_UPPER_BOUND     = DASH_MACH + M_CRIT_SAFETY_MARGIN  # = 0.57
+
+# ── Wing apex position (aircraft reference frame) ─────────────────────────────
+# Origin: nose tip.  x: positive AFT (fuselage station).  y: positive starboard.
+# z: positive DOWN.  Fuselage length = 2.0 m; wing root LE ~40 % aft of nose.
+# These are geometric inputs; promote to design variables for CG / SM optimisation.
+WING_X_APEX_M = 0.80   # x-station of wing root LE from nose [m]
+WING_Z_APEX_M = 0.00   # z-station of wing root LE from nose datum [m]
+
+# ── CG estimation ─────────────────────────────────────────────────────────────
+# Bypass: set CG_BYPASS=True and edit the three manual values to override.
+# Estimate mode: component list is defined in add_cg_estimation() below.
+CG_BYPASS         = False
+CG_X_MANUAL_M     = 0.91   # [m] x_cg override -- only active when CG_BYPASS=True
+CG_Y_MANUAL_M     = 0.00   # [m] y_cg override
+CG_Z_MANUAL_M     = 0.05   # [m] z_cg override
+CG_MASS_MANUAL_KG = 15.0   # [kg] total mass override
+
 # ── Output detail flag ────────────────────────────────────────────────────────
 PRINT_AERO_DETAIL = True  # set False to suppress the wing/VTP/rudder aero breakdown
+
+# ── Model version ─────────────────────────────────────────────────────────────
+# Bump manually in line with CHANGELOG.md:
+#   patch (x.y.Z) -- bug fix, doc tweak, parameter change
+#   minor (x.Y.0) -- new physics component or constraint
+#   major (X.0.0) -- architectural redesign (new DV set, new EOM, new mission)
+MODEL_VERSION = '1.6.0'
+
+
+def ipopt_available():
+    try:
+        from pyoptsparse import OPT
+        OPT('IPOPT')
+        return True
+    except Exception:
+        return False
+
+
+def select_optimizer():
+    requested = os.environ.get('SPAJETI_OPTIMIZER', '').strip().upper()
+    if requested:
+        return requested
+    return 'IPOPT' if ipopt_available() else 'SLSQP'
+
+
+OPTIMIZER = select_optimizer()
 
 
 class FuelBudgetEstimate(om.ExplicitComponent):
@@ -162,12 +249,20 @@ def print_aero_detail(prob):
     wing_sweep    = safe_get(prob, av.Aircraft.Wing.SWEEP,            'deg')
     wing_taper    = safe_get(prob, av.Aircraft.Wing.TAPER_RATIO)
     wing_tc       = safe_get(prob, av.Aircraft.Wing.THICKNESS_TO_CHORD)
+    wing_section_tc = safe_get(prob, 'wing_section_tc')
     wing_dihedral = safe_get(prob, _WING_DIHEDRAL,                   'deg')
 
     ar_eff        = safe_get(prob, 'AR_eff')
     k_h           = safe_get(prob, 'k_h')
     k_wf          = safe_get(prob, 'K_wf')
     wing_cl_alpha = safe_get(prob, 'wing_CL_alpha')
+
+    wing_root_chord = safe_get(prob, 'wing_root_chord',  'm')
+    wing_c_mac      = safe_get(prob, 'wing_c_mac',       'm')
+    wing_y_mac      = safe_get(prob, 'wing_y_mac',       'm')
+    wing_x_mac_le   = safe_get(prob, 'wing_x_mac_le',    'm')
+    wing_z_mac_le   = safe_get(prob, 'wing_z_mac_le',    'm')
+    wing_x_mac_c4   = safe_get(prob, 'wing_x_mac_c4',   'm')
 
     vtp_span      = safe_get(prob, av.Aircraft.VerticalTail.SPAN,             'm')
     vtp_area      = safe_get(prob, av.Aircraft.VerticalTail.AREA,             'm**2')
@@ -187,6 +282,10 @@ def print_aero_detail(prob):
     nz_cl_om      = safe_get(prob, 'CL')
     nz_lift_om    = safe_get(prob, 'lift', 'N')
 
+    m_dd          = safe_get(prob, 'M_DD')
+    m_crit        = safe_get(prob, 'M_crit')
+    m_crit_margin = safe_get(prob, 'mach_crit_margin')
+
     beta_pg = (1.0 - CONSTRAINT_MACH ** 2) ** 0.5
 
     print('\n' + '=' * 70)
@@ -202,8 +301,34 @@ def print_aero_detail(prob):
     print_result('AR_geo = b^2/S',                wing_ar,      '')
     print_result('Quarter-chord sweep Lc/4',      wing_sweep,   'deg')
     print_result('Taper ratio lambda',            wing_taper,   '')
-    print_result('Thickness/chord t/c',           wing_tc,      '')
+    print_result('Thickness/chord t/c [FLOPS fixed]', wing_tc,      '')
+    print_result('Section t/c [M_crit design var]',   wing_section_tc, '')
     print_result('Dihedral',                      wing_dihedral,'deg')
+
+    # ── 1b. Wing MAC geometry ─────────────────────────────────────────────────
+    print('\nWing Mean Aerodynamic Chord - MACGeometryComp')
+    print('-' * 70)
+    print('  Frame: origin at nose tip; x positive AFT; y positive starboard; z positive DOWN')
+    print()
+    print(f'  {"Formula: c_r = 2*S / (b*(1+lambda))":<69}')
+    print(f'  {"         c_mac = (2/3)*c_r*(1+lambda+lambda^2)/(1+lambda)":<69}')
+    print(f'  {"         y_mac = (b/6)*(1+2*lambda)/(1+lambda)":<69}')
+    print(f'  {"         tan_LE = tan(c4_sweep) + c_r*(1-lambda)/b":<69}')
+    print(f'  {"         x_mac_le = x_apex + y_mac*tan_LE":<69}')
+    print(f'  {"         z_mac_le = z_apex - y_mac*tan(dihedral)":<69}')
+    print()
+    print(f'  {"Wing root LE (apex) x-station [fixed]":<35} = {WING_X_APEX_M:>10.4f} m')
+    print(f'  {"Wing root LE (apex) z-station [fixed]":<35} = {WING_Z_APEX_M:>10.4f} m')
+    print_result('Root chord c_r (derived from S,b,lambda)', wing_root_chord, 'm')
+    print_result('MAC chord c_mac',                           wing_c_mac,      'm')
+    print_result('MAC BL station y_mac (from CL)',            wing_y_mac,      'm')
+    print_result('MAC LE x-station from nose',                wing_x_mac_le,   'm')
+    print_result('MAC LE z-station from nose datum',          wing_z_mac_le,   'm')
+    print_result('MAC c/4 x-station (aero centre x)',         wing_x_mac_c4,   'm')
+    if not any(isinstance(v, str) for v in (wing_x_mac_c4, wing_c_mac, wing_span)):
+        fus_len = safe_get(prob, av.Aircraft.Fuselage.LENGTH, 'm')
+        if not isinstance(fus_len, str):
+            print_result('  x_mac_c4 / fuselage length',      wing_x_mac_c4 / fus_len, '')
 
     # ── 2. Scholz winglet AR correction ──────────────────────────────────────
     print('\nEndplate AR Correction - Scholz (2018) Winglet Method')
@@ -238,14 +363,50 @@ def print_aero_detail(prob):
         print_result('AR gain = AR_eff - AR_geo',           ar_gain,     '')
         print_result('AR gain (%)',                          ar_gain_pct, '%')
 
+    # ── 2b. Wing M_crit / M_DD (Weisshaar Eq. 36) ─────────────────────────────
+    _m_delta = (0.1 / 80.0) ** (1.0 / 3.0)
+    print('\nWing M_crit / M_DD - Weisshaar Eq. 36 (K_A = 0.887)')
+    print('-' * 70)
+    print(f'  {"Formula: M_DD = K_A/cos(phi) - (t/c)/cos^2 - CL/(10*cos^3)":<69}')
+    print(f'  {"         M_crit = M_DD - (0.1/80)^(1/3) ~ M_DD - 0.108":<69}')
+    print()
+    print(f'  {"Input: K_A (Weisshaar optimised)":<35} = {0.887:>10.4f}')
+    print(f'  {"Input: t/c  [design var]":<35} = ', end='')
+    print(f'{wing_section_tc:>10.4f}  ({WING_AIRFOIL.name})'
+          if not isinstance(wing_section_tc, str) else wing_section_tc)
+    print(f'  {"Input: alpha_max [shared with Nz]":<35} = {ALPHA_MAX_DEG:>10.4f} deg')
+    print(f'  {"Input: sweep c/4  phi_25":<35} = ', end='')
+    print(f'{wing_sweep:>10.4f} deg' if not isinstance(wing_sweep, str) else wing_sweep)
+    if not any(isinstance(v, str) for v in (wing_sweep, wing_cl_alpha, wing_section_tc)):
+        cl_from_alpha = wing_cl_alpha * (ALPHA_MAX_DEG * np.pi / 180.0)
+        phi_rad = wing_sweep * np.pi / 180.0
+        cos1    = np.cos(phi_rad)
+        mdd_r   = 0.887 / cos1 - wing_section_tc / cos1**2 - cl_from_alpha / (10.0 * cos1**3)
+        mcrit_r = mdd_r - _m_delta
+        print()
+        print_result('CL = wing_CL_alpha * alpha_max_rad', cl_from_alpha, '')
+        print_result('M_DD (reproduced)',                   mdd_r,  '')
+        print_result('M_DD (from OpenMDAO)',                m_dd,   '')
+        print_result('(0.1/80)^(1/3) = M_DD - M_crit',    _m_delta, '')
+        print_result('M_crit (reproduced)',                 mcrit_r, '[informational]')
+        print_result('M_crit (from OpenMDAO)',              m_crit,  '[informational]')
+        print()
+        print(f'  {"M_crit check: DASH_MACH + safety":<35} = '
+              f'{DASH_MACH:.3f} + {M_CRIT_SAFETY_MARGIN:.3f} = {MACH_UPPER_BOUND:.4f}')
+        print_result('mach_crit_margin = M_crit-check [min 0]', m_crit_margin, '')
+        if not isinstance(m_crit_margin, str):
+            status = 'OK' if m_crit_margin >= 0.0 else 'VIOLATED -- see TOOD.md alpha_max/CL_max'
+            print(f'  {"Constraint status":<35}   {status}')
+
     # ── 3. Wing Polhamus ──────────────────────────────────────────────────────
-    print('\nWing CL_alpha - LiftCurveSlopePolhamus (Roskam 8.22) + K_wf')
+    print(f'\nWing CL_alpha - LiftCurveSlopePolhamus (Roskam 8.22) + K_wf  [{WING_AIRFOIL.name}]')
     print('-' * 70)
     print(f'  {"Input: AR_eff (from endplate corr.)":<35} = ', end='')
     print(f'{ar_eff:>10.4f}' if not isinstance(ar_eff, str) else ar_eff)
     print(f'  {"Input: Mach at design point":<35} = {CONSTRAINT_MACH:>10.4f}')
     print(f'  {"Input: beta_PG = sqrt(1 - M^2)":<35} = {beta_pg:>10.4f}')
-    print(f'  {"Input: section lift slope (2pi)":<35} = {2.0 * np.pi:>10.4f} /rad  (thin-airfoil)')
+    print(f'  {"Input: section lift slope":<35} = {WING_AIRFOIL.cl_alpha_per_rad:>10.4f} /rad'
+          f'  ({WING_AIRFOIL.name}, Re={WING_AIRFOIL.re_ref:.0e}, incompressible)')
     print(f'  {"Input: quarter-chord sweep Lambda_c/4":<35} = ', end='')
     print(f'{wing_sweep:>10.4f} deg' if not isinstance(wing_sweep, str) else wing_sweep)
     print(f'  {"Input: taper ratio Lambda":<35} = ', end='')
@@ -275,13 +436,14 @@ def print_aero_detail(prob):
         print(f'  {"   note":<33}   {note}')
 
     # ── 5. VTP aerodynamics ───────────────────────────────────────────────────
-    print('\nVTP CL_alpha_v - LiftCurveSlopePolhamus (raw AR_v, no endplate correction)')
+    print(f'\nVTP CL_alpha_v - LiftCurveSlopePolhamus (raw AR_v)  [{VTP_AIRFOIL.name}]')
     print('-' * 70)
     print(f'  {"Input: AR_v (raw, no k_h)":<35} = ', end='')
     print(f'{vtp_ar:>10.4f}' if not isinstance(vtp_ar, str) else vtp_ar)
     print(f'  {"Input: Mach":<35} = {CONSTRAINT_MACH:>10.4f}')
     print(f'  {"Input: beta_PG":<35} = {beta_pg:>10.4f}')
-    print(f'  {"Input: section lift slope (2pi)":<35} = {2.0 * np.pi:>10.4f} /rad')
+    print(f'  {"Input: section lift slope":<35} = {VTP_AIRFOIL.cl_alpha_per_rad:>10.4f} /rad'
+          f'  ({VTP_AIRFOIL.name}, Re={VTP_AIRFOIL.re_ref:.0e}, incompressible)')
     print(f'  {"Input: fuselage diam. d_f":<35} = {0.0:>10.4f} m  (K_wf = 1)')
     print_result('Input: sweep c/4',                    vtp_sweep,  'deg')
     print_result('Input: taper ratio Lambda',                vtp_taper,  '')
@@ -393,70 +555,90 @@ def add_load_factor_subsystems(prob):
 
     # ── Fixed design-point inputs (flight condition + rudder geometry) ────────
     fixed = om.IndepVarComp()
-    fixed.add_output('delta_r_deg',      val=RUDDER_DELTA_DEG,  units='deg')
-    fixed.add_output('beta_deg',         val=RUDDER_DELTA_DEG,  units='deg')
-    fixed.add_output('dynamic_pressure', val=CONSTRAINT_Q_PA,   units='Pa')
-    fixed.add_output('aircraft_mass',    val=MAX_TAKEOFF_MASS_KG, units='kg')
-    fixed.add_output('rudder_cf_c',      val=RUDDER_CF_C,       units='unitless')
-    fixed.add_output('rudder_eta_root',  val=RUDDER_ETA_ROOT,   units='unitless')
-    fixed.add_output('rudder_eta_tip',   val=RUDDER_ETA_TIP,    units='unitless')
+    fixed.add_output('delta_r_deg',      val=RUDDER_DELTA_DEG,    units='deg')
+    fixed.add_output('beta_deg',         val=RUDDER_DELTA_DEG,    units='deg')
+    fixed.add_output('dynamic_pressure', val=CONSTRAINT_Q_PA,     units='Pa')
+    fixed.add_output('aircraft_mass',    val=MAX_TAKEOFF_MASS_KG,  units='kg')
+    fixed.add_output('rudder_cf_c',      val=RUDDER_CF_C,         units='unitless')
+    fixed.add_output('rudder_eta_root',  val=RUDDER_ETA_ROOT,     units='unitless')
+    fixed.add_output('rudder_eta_tip',   val=RUDDER_ETA_TIP,      units='unitless')
+    fixed.add_output('design_mach',      val=CONSTRAINT_MACH,     units='unitless',
+                     desc='Mach at the constraint flight condition -- shared by all surface Polhamus instances')
+    fixed.add_output('alpha_max_deg',    val=ALPHA_MAX_DEG,       units='deg',
+                     desc='Max operating alpha [deg] -- shared by Nz (LongitudinalLoadFactor) and M_DD (MachCriticalComp)')
+    fixed.add_output('mach_upper_bound', val=MACH_UPPER_BOUND,    units='unitless',
+                     desc='M_crit check Mach: DASH_MACH + M_CRIT_SAFETY_MARGIN; constraint M_crit >= this value')
+    # ── Wing apex position in the aircraft reference frame ────────────────────
+    # Frame: origin at nose tip; x positive AFT (fuselage station); y positive
+    # starboard; z positive DOWN.  These are geometric inputs -- promote to DVs
+    # when the CG / static-margin loop is added.
+    fixed.add_output('wing_x_apex', val=WING_X_APEX_M, units='m',
+                     desc='Wing root LE x-station from nose (positive aft) [m]')
+    fixed.add_output('wing_z_apex', val=WING_Z_APEX_M, units='m',
+                     desc='Wing root LE z-station from nose datum (positive down) [m]')
     model.add_subsystem('load_cond', fixed, promotes_outputs=['*'])
 
     # ── H-tail VTP geometry: span/chord -> area, AR, fuselage_vtp_span_ratio ──
     model.add_subsystem('htail_geom', HTailGeometry(), promotes=['*'])
 
-    # ── Scholz winglet AR correction: AR_eff = k_h * AR_wing ────────────────
+    # ── Wing surface: Scholz AR correction + Polhamus + K_wf ─────────────────
     model.add_subsystem(
-        'endplate_ar', ScholzWingletARCorrection(k_wl=K_WL, split_penalty=SPLIT_PENALTY),
+        'wing_surface', WingSurface(cfg=WING_SURFACE_CFG),
         promotes_inputs=[
-            ('aspect_ratio', av.Aircraft.Wing.ASPECT_RATIO),
-            ('vtp_span',     av.Aircraft.VerticalTail.SPAN),
-            ('wing_span',    av.Aircraft.Wing.SPAN),
+            ('surface_ar',       av.Aircraft.Wing.ASPECT_RATIO),
+            ('surface_span',     av.Aircraft.Wing.SPAN),
+            ('surface_sweep_c4', av.Aircraft.Wing.SWEEP),
+            ('surface_taper',    av.Aircraft.Wing.TAPER_RATIO),
+            ('surface_area',     av.Aircraft.Wing.AREA),
+            ('dihedral_deg',     'aircraft:wing:dihedral'),
+            ('endplate_span',    av.Aircraft.VerticalTail.SPAN),
+            'design_mach',
+            'alpha_max_deg',
+            'mach_upper_bound',
+            'wing_x_apex',
+            'wing_z_apex',
         ],
-        promotes_outputs=['AR_eff', 'k_h'],
+        promotes_outputs=[
+            ('surface_CL_alpha', 'wing_CL_alpha'),
+            ('k_eff',            'k_h'),
+            'AR_eff',
+            'K_wf',
+            'M_DD',
+            'M_crit',
+            'mach_crit_margin',
+            ('section_tc', 'wing_section_tc'),
+            'wing_root_chord',
+            'wing_c_mac',
+            'wing_y_mac',
+            'wing_x_mac_le',
+            'wing_z_mac_le',
+            'wing_x_mac_c4',
+        ],
     )
 
-    # ── Wing CL_alpha (Polhamus + K_wf, endplate-corrected AR) ───────────────
+    # ── VTP surface: Polhamus + CyBetaVtp + CyDeltaRudder ────────────────────
     model.add_subsystem(
-        'wing_polhamus', LiftCurveSlopePolhamus(),
+        'vtp_surface', VTPSurface(cfg=VTP_SURFACE_CFG),
         promotes_inputs=[
-            ('aspect_ratio',   'AR_eff'),
-            ('sweep_c4_deg',   av.Aircraft.Wing.SWEEP),
-            ('taper_ratio',    av.Aircraft.Wing.TAPER_RATIO),
-            ('wing_span',      av.Aircraft.Wing.SPAN),
-        ],
-        promotes_outputs=[('CL_alpha', 'wing_CL_alpha'), 'K_wf'],
-    )
-
-    # ── VTP CL_alpha_v (Polhamus, DV-driven vtp_ar from HTailGeometry) ──────
-    model.add_subsystem(
-        'vtp_polhamus', LiftCurveSlopePolhamus(),
-        promotes_inputs=[
-            ('aspect_ratio', 'vtp_ar'),             # from htail_geom (plain name)
-            ('sweep_c4_deg', av.Aircraft.VerticalTail.SWEEP),
-            ('taper_ratio',  av.Aircraft.VerticalTail.TAPER_RATIO),
-        ],
-        promotes_outputs=[('CL_alpha', 'CL_alpha_v')],
-    )
-
-    # ── Passive side-force derivative from H-tail VTPs ────────────────────────
-    model.add_subsystem('cy_beta_vtp_comp', CyBetaVtp(), promotes=['*'])
-
-    # ── Active rudder authority ───────────────────────────────────────────────
-    model.add_subsystem(
-        'cy_delta_r_comp', CyDeltaRudder(),
-        promotes_inputs=[
-            'vtp_area',                            # from htail_geom (plain name)
-            av.Aircraft.VerticalTail.TAPER_RATIO,  # from CSV
-            av.Aircraft.VerticalTail.THICKNESS_TO_CHORD,
+            ('surface_ar',       'vtp_ar'),                        # from htail_geom
+            ('surface_area',     'vtp_area'),                      # from htail_geom
+            ('surface_sweep_c4', av.Aircraft.VerticalTail.SWEEP),
+            ('surface_taper',    av.Aircraft.VerticalTail.TAPER_RATIO),
+            'design_mach',
+            'fuselage_vtp_span_ratio',
             'wing_ref_area',
-            ('CL_alpha_v', 'CL_alpha_v'),
-            'rudder_cf_c',
-            'rudder_eta_root',
-            'rudder_eta_tip',
-            'delta_r_deg',
+            av.Aircraft.HorizontalTail.AREA,
+            av.Aircraft.HorizontalTail.ASPECT_RATIO,
+            av.Aircraft.Fuselage.LENGTH,
+            av.Aircraft.VerticalTail.TAPER_RATIO,
+            av.Aircraft.VerticalTail.THICKNESS_TO_CHORD,
+            'rudder_cf_c', 'rudder_eta_root', 'rudder_eta_tip', 'delta_r_deg',
         ],
-        promotes_outputs=['CY_delta_r'],
+        promotes_outputs=[
+            ('surface_CL_alpha', 'CL_alpha_v'),
+            'CY_beta_vtp',
+            'CY_delta_r',
+        ],
     )
 
     # ── Lateral load factor -> Ny ──────────────────────────────────────────────
@@ -470,6 +652,7 @@ def add_load_factor_subsystems(prob):
             'dynamic_pressure',
             'wing_ref_area',
             'aircraft_mass',
+            'alpha_max_deg',
         ],
         promotes_outputs=['CL', 'lift', 'Nz'],
     )
@@ -535,11 +718,137 @@ def write_payload_range_report(prob):
     return csv_path
 
 
+def add_cg_estimation(prob, cg_est):
+    """Add the CG estimator (or bypass IVC) to the model and wire live masses."""
+    model = prob.model
+
+    # Variable masses that live at Aviary model scope: promote so they auto-connect
+    model.add_subsystem(
+        'cg_est', cg_est,
+        promotes_inputs=[
+            av.Aircraft.CrewPayload.TOTAL_PAYLOAD_MASS,
+            av.Mission.TOTAL_FUEL,
+        ],
+        promotes_outputs=['x_cg', 'y_cg', 'z_cg', 'total_mass'],
+    )
+
+    if not cg_est.bypass:
+        # Engine mass lives inside pre_mission.propulsion -- needs explicit connect
+        prob.model.connect(
+            premission_propulsion_var(SmallTurbojetVariables.MASS),
+            'cg_est.cg_engine_mass',
+        )
+
+
+def print_cg_detail(prob, cg_est):
+    """Print component CG breakdown table."""
+    x_cg       = safe_get(prob, 'x_cg',       'm')
+    y_cg       = safe_get(prob, 'y_cg',       'm')
+    z_cg       = safe_get(prob, 'z_cg',       'm')
+    total_mass = safe_get(prob, 'total_mass', 'kg')
+
+    print('\n' + '=' * 70)
+    print('CG ESTIMATION')
+    if cg_est.bypass:
+        print('  (BYPASS MODE -- manual values)')
+    print('=' * 70)
+
+    if cg_est.bypass:
+        print_result('x_cg  [manual]',   x_cg,       'm')
+        print_result('y_cg  [manual]',   y_cg,       'm')
+        print_result('z_cg  [manual]',   z_cg,       'm')
+        print_result('total_mass [manual]', total_mass, 'kg')
+        return
+
+    print(f'\n  {"Component":<20} {"Mass [kg]":>10} {"x [m]":>8} {"y [m]":>8} {"z [m]":>8} {"x*m":>10}')
+    print('  ' + '-' * 66)
+    sum_mass = 0.0
+    sum_xm   = 0.0
+    sum_ym   = 0.0
+    sum_zm   = 0.0
+    for name, mass_spec, x_def, y_def, z_def in cg_est.components:
+        m_val = safe_get(prob, f'cg_est.cg_compute.{name}_mass', 'kg')
+        x_val = safe_get(prob, f'cg_est.cg_compute.{name}_x',    'm')
+        y_val = safe_get(prob, f'cg_est.cg_compute.{name}_y',    'm')
+        z_val = safe_get(prob, f'cg_est.cg_compute.{name}_z',    'm')
+        if any(isinstance(v, str) for v in (m_val, x_val, y_val, z_val)):
+            print(f'  {name:<20}  (not available)')
+            continue
+        xm = m_val * x_val
+        sum_mass += m_val
+        sum_xm   += xm
+        sum_ym   += m_val * y_val
+        sum_zm   += m_val * z_val
+        var_tag = '*' if isinstance(mass_spec, str) else ' '
+        print(f'  {name:<20}{var_tag}{m_val:>10.3f} {x_val:>8.3f} {y_val:>8.3f} {z_val:>8.3f} {xm:>10.4f}')
+    print('  ' + '-' * 66)
+    print(f'  {"TOTAL":<21}{sum_mass:>10.3f}', end='')
+    if sum_mass > 0:
+        xcg = sum_xm / sum_mass
+        ycg = sum_ym / sum_mass
+        zcg = sum_zm / sum_mass
+        print(f'                              {sum_xm:>10.4f}')
+        print()
+        print(f'  * mass from OpenMDAO variable (live -- updates with optimizer)')
+    else:
+        print()
+    print()
+    print_result('x_cg  (from OpenMDAO)', x_cg,       'm')
+    print_result('y_cg  (from OpenMDAO)', y_cg,       'm')
+    print_result('z_cg  (from OpenMDAO)', z_cg,       'm')
+    print_result('total_mass (from OpenMDAO)', total_mass, 'kg')
+    # Cross-check against gross mass
+    gross = safe_get(prob, av.Aircraft.Design.GROSS_MASS, 'kg')
+    if not any(isinstance(v, str) for v in (total_mass, gross)):
+        delta = total_mass - gross
+        print_result('  delta vs gross mass', delta, 'kg')
+        note = ('OK' if abs(delta) < 1.0 else
+                'WARNING: >1 kg delta -- update component mass estimates')
+        print(f'  {"  note":<33}   {note}')
+
+
 def remove_dashboard_incompatible_recorder(prob):
     """Avoid a dashboard crash on custom promoted design-variable metadata."""
     opt_history_path = Path(prob.get_outputs_dir()) / 'optimization_history.db'
     if opt_history_path.exists():
         opt_history_path.unlink()
+
+
+def build_cg_estimator():
+    """Construct the CGEstimatorGroup for the SpaJeti H-wing UAV.
+
+    Mass estimates labelled [PLACEHOLDER] will be replaced when the FLOPS
+    component mass breakdown is exposed (see TOOD.md weight estimation).
+    Positions are x-stations in the aircraft frame (origin nose, positive aft).
+    """
+    cg_est = CGEstimatorGroup(
+        bypass=CG_BYPASS,
+        x_cg_manual=CG_X_MANUAL_M,
+        y_cg_manual=CG_Y_MANUAL_M,
+        z_cg_manual=CG_Z_MANUAL_M,
+        total_mass_manual=CG_MASS_MANUAL_KG,
+    )
+
+    # ── Fixed-mass structural components [PLACEHOLDER masses] ─────────────────
+    # Replace with FLOPS component mass outputs when weight breakdown is added.
+    cg_est.add_component('wing_struct',  mass=1.50, x=WING_X_APEX_M, y=0.0, z=WING_Z_APEX_M)
+    cg_est.add_component('fuselage',     mass=1.00, x=1.00,          y=0.0, z=0.00)
+    cg_est.add_component('empennage',    mass=0.25, x=1.85,          y=0.0, z=0.00)
+    cg_est.add_component('vtp_pair',     mass=0.15, x=1.75,          y=0.0, z=-0.15)
+    cg_est.add_component('landing_gear', mass=0.20, x=0.95,          y=0.0, z=0.15)
+    cg_est.add_component('avionics',     mass=0.25, x=0.45,          y=0.0, z=0.00)
+
+    # ── Variable-mass components (wired to optimizer / Aviary outputs) ─────────
+    # 'cg_engine_mass'  -> connected in add_cg_estimation via prob.model.connect
+    # av.Mission.TOTAL_FUEL and TOTAL_PAYLOAD_MASS -> promoted at call site
+    cg_est.add_component('engine',  mass='cg_engine_mass',
+                         x=1.55, y=0.0, z=0.00)
+    cg_est.add_component('payload', mass=av.Aircraft.CrewPayload.TOTAL_PAYLOAD_MASS,
+                         x=0.85, y=0.0, z=0.05)
+    cg_est.add_component('fuel',    mass=av.Mission.TOTAL_FUEL,
+                         x=0.90, y=0.0, z=0.05)
+
+    return cg_est
 
 
 def build_problem():
@@ -563,21 +872,25 @@ def build_problem():
     empty_mass_kg = prob.aviary_inputs.get_val(av.Aircraft.Design.EMPTY_MASS, units='kg')
     engine_mass_upper_kg = min(ENGINE_MASS_LIMIT_KG, gross_mass_kg - empty_mass_kg)
 
+    cg_est = build_cg_estimator()
+
     prob.add_pre_mission_systems()
     add_load_factor_subsystems(prob)
     prob.add_phases()
     prob.add_post_mission_systems()
     add_fuel_budget_constraint(prob)
+    add_cg_estimation(prob, cg_est)
     prob.link_phases()
 
-    prob.add_driver('IPOPT', max_iter=500, verbosity=av.Verbosity.VERBOSE)
-    prob.driver.opt_settings['mu_strategy'] = 'adaptive'
-    prob.driver.opt_settings['mu_init'] = 0.1
-    prob.driver.opt_settings['nlp_scaling_method'] = 'none'
-    prob.driver.opt_settings['acceptable_tol'] = 5e-3
-    prob.driver.opt_settings['acceptable_iter'] = 5
-    prob.driver.opt_settings['acceptable_constr_viol_tol'] = 1e-3
-    prob.driver.opt_settings['acceptable_dual_inf_tol'] = 1.0
+    prob.add_driver(OPTIMIZER, max_iter=500, verbosity=av.Verbosity.VERBOSE)
+    if OPTIMIZER == 'IPOPT':
+        prob.driver.opt_settings['mu_strategy'] = 'adaptive'
+        prob.driver.opt_settings['mu_init'] = 0.1
+        prob.driver.opt_settings['nlp_scaling_method'] = 'none'
+        prob.driver.opt_settings['acceptable_tol'] = 5e-3
+        prob.driver.opt_settings['acceptable_iter'] = 5
+        prob.driver.opt_settings['acceptable_constr_viol_tol'] = 1e-3
+        prob.driver.opt_settings['acceptable_dual_inf_tol'] = 1.0
 
     # ── Design variables ──────────────────────────────────────────────────────
     prob.add_design_variables()   # engine DVs, phase Mach schedules, etc.
@@ -589,6 +902,10 @@ def build_problem():
         av.Aircraft.VerticalTail.SPAN,
         lower=VTP_SPAN_LOWER_M, upper=VTP_SPAN_UPPER_M,
         units='m', ref=VTP_SPAN_INITIAL_M,
+    )
+    prob.model.add_design_var(
+        'wing_section_tc',
+        lower=WING_TC_LOWER, upper=WING_TC_UPPER, ref=WING_TC_INITIAL,
     )
 
     # ── Constraints ───────────────────────────────────────────────────────────
@@ -603,6 +920,10 @@ def build_problem():
     prob.model.add_constraint('Ny', lower=NY_MIN, ref=NY_MIN)
     prob.model.add_constraint('Nz', lower=NZ_MIN, ref=NZ_MIN)
     prob.model.add_constraint(
+        'mach_crit_margin',
+        lower=0.0, ref=0.1,
+    )
+    prob.model.add_constraint(
         av.Aircraft.Engine.SCALED_SLS_THRUST,
         lower=TW_MIN * MAX_TAKEOFF_MASS_KG * 9.80665,
         units='N', ref=300.0,
@@ -615,21 +936,16 @@ def build_problem():
     prob.set_val(av.Aircraft.Design.EMPTY_MASS, EMPTY_MASS_KG, 'kg')
     prob.set_val(av.Aircraft.Design.GROSS_MASS, MAX_TAKEOFF_MASS_KG, 'kg')
     prob.set_val(av.Aircraft.VerticalTail.SPAN, VTP_SPAN_INITIAL_M, 'm')
+    prob.set_val('wing_section_tc', WING_TC_INITIAL)
 
-    # Fixed Polhamus inputs not promoted (Mach, section slope, fuselage diameter)
-    prob.set_val('wing_polhamus.mach',              CONSTRAINT_MACH)
-    prob.set_val('wing_polhamus.section_lift_slope', 2.0 * np.pi)
-    prob.set_val('wing_polhamus.fuselage_diameter', FUSELAGE_EQUIV_DIAMETER_M)
-    prob.set_val('vtp_polhamus.mach',               CONSTRAINT_MACH)
-    prob.set_val('vtp_polhamus.section_lift_slope',  2.0 * np.pi)
-    prob.set_val('vtp_polhamus.fuselage_diameter',   0.0)
-    prob.set_val('long_load.alpha_max_deg',          12.0)
+    # Mach, section lift slope, fuselage diameter, and alpha_max are now wired through
+    # IndepVarComps (load_cond) and surface Groups (AirfoilConstantsComp, fus_const).
 
-    return prob, engine_mass_upper_kg
+    return prob, engine_mass_upper_kg, cg_est
 
 
 def build_xdsm_problem():
-    prob, _ = build_problem()
+    prob, _, _cg = build_problem()
     prob.final_setup()
     return prob
 
@@ -637,14 +953,16 @@ def build_xdsm_problem():
 def main():
     print('\n' + '=' * 70)
     print('HORIZONTAL-TAIL SMALL UAV RANGE OPTIMIZATION')
+    print(f'  Version         : v{MODEL_VERSION}  (SpaJeti v1.0.0 H-wing)')
     print('  Layout          : H-tail (wing + twin-VTP endplates) + small turbojet')
-    print('  Design variables: wing span, VTP span, scaled SLS thrust, phase Mach')
-    print('  Constraints     : Ny >= 7, Nz >= 7 (550 km/h, 5 km), T/W >= 1.5, fuel')
+    print('  Design variables: wing span, VTP span, wing section t/c, scaled SLS thrust, phase Mach')
+    print('  Constraints     : Ny >= 7, Nz >= 7 (550 km/h, 5 km), T/W >= 1.5, fuel,')
+    print(f'                    M_crit >= {MACH_UPPER_BOUND:.2f} (DASH + {M_CRIT_SAFETY_MARGIN:.2f})')
     print('  Objective       : maximize range')
-    print('  Method          : IPOPT gradient-based')
+    print(f'  Method          : {OPTIMIZER} gradient-based')
     print('=' * 70 + '\n')
 
-    prob, engine_mass_upper_kg = build_problem()
+    prob, engine_mass_upper_kg, cg_est = build_problem()
 
     with warnings.catch_warnings(), np.errstate(invalid='ignore', over='ignore'):
         warnings.simplefilter('ignore', RuntimeWarning)
@@ -662,6 +980,7 @@ def main():
     print_result('Wing Span',         safe_get(prob, av.Aircraft.Wing.SPAN, 'm'), 'm')
     print_result('Wing Area',         safe_get(prob, av.Aircraft.Wing.AREA, 'm**2'), 'm^2')
     print_result('Wing Aspect Ratio', safe_get(prob, av.Aircraft.Wing.ASPECT_RATIO))
+    print_result('Wing Section t/c (M_crit DV)', safe_get(prob, 'wing_section_tc'))
     print_result('Wing AR_eff (endplate)', safe_get(prob, 'AR_eff'))
     print_result('Wing k_h (endplate factor)', safe_get(prob, 'k_h'))
     print_result('Wing K_wf (fuselage factor)', safe_get(prob, 'K_wf'))
@@ -673,12 +992,29 @@ def main():
 
     print('\nLoad Factors (550 km/h, 5 km ISA):')
     print('-' * 70)
+    print('\nWing MAC Geometry:')
+    print('-' * 70)
+    print_result('Wing root chord c_r',           safe_get(prob, 'wing_root_chord',  'm'), 'm')
+    print_result('Wing MAC c_mac',                safe_get(prob, 'wing_c_mac',       'm'), 'm')
+    print_result('Wing MAC BL y_mac',             safe_get(prob, 'wing_y_mac',       'm'), 'm')
+    print_result('Wing MAC LE x-station',         safe_get(prob, 'wing_x_mac_le',    'm'), 'm')
+    print_result('Wing MAC LE z-station',         safe_get(prob, 'wing_z_mac_le',    'm'), 'm')
+    print_result('Wing MAC c/4 x-station',        safe_get(prob, 'wing_x_mac_c4',   'm'), 'm')
+
+    print('\nLoad Factors (550 km/h, 5 km ISA):')
+    print('-' * 70)
     print_result('Wing CL_alpha (endplate+K_wf)', safe_get(prob, 'wing_CL_alpha'), '/rad')
     print_result('VTP CL_alpha_v',  safe_get(prob, 'CL_alpha_v'), '/rad')
     print_result('CY_beta_vtp',     safe_get(prob, 'CY_beta_vtp'), '/rad')
     print_result('CY_delta_r',      safe_get(prob, 'CY_delta_r'), '/rad')
     print_result('Ny (lateral)',     safe_get(prob, 'Ny'), f'[min {NY_MIN}]')
     print_result('Nz (vertical)',    safe_get(prob, 'Nz'), f'[min {NZ_MIN}]')
+    print_result('Wing M_DD (Weisshaar)', safe_get(prob, 'M_DD'), '[informational]')
+    print_result('Wing M_crit',           safe_get(prob, 'M_crit'), '')
+    print_result('M_crit check Mach',     MACH_UPPER_BOUND,
+                 f'(DASH={DASH_MACH} + {M_CRIT_SAFETY_MARGIN})')
+    print_result('mach_crit_margin (M_crit - check)',
+                 safe_get(prob, 'mach_crit_margin'), '[min 0.00]')
     sls_thrust = safe_get(prob, av.Aircraft.Engine.SCALED_SLS_THRUST, 'N')
     print_result('SLS Thrust', sls_thrust, 'N')
     if not isinstance(sls_thrust, str):
@@ -723,6 +1059,24 @@ def main():
     print_result('Empty Mass', empty_mass, 'kg')
     if not any(isinstance(v, str) for v in (gross_mass, empty_mass, engine_mass)):
         print_result('Empty + Engine', empty_mass + engine_mass, 'kg')
+
+    print('\nCentre of Gravity:')
+    print('-' * 70)
+    print_result('x_cg', safe_get(prob, 'x_cg', 'm'), 'm')
+    print_result('y_cg', safe_get(prob, 'y_cg', 'm'), 'm')
+    print_result('z_cg', safe_get(prob, 'z_cg', 'm'), 'm')
+    print_result('total_mass (CG estimator)', safe_get(prob, 'total_mass', 'kg'), 'kg')
+    x_mac_c4 = safe_get(prob, 'wing_x_mac_c4', 'm')
+    c_mac_val = safe_get(prob, 'wing_c_mac',    'm')
+    x_cg_val  = safe_get(prob, 'x_cg',         'm')
+    if not any(isinstance(v, str) for v in (x_mac_c4, c_mac_val, x_cg_val)):
+        sm_approx = (x_mac_c4 - x_cg_val) / c_mac_val
+        print_result('  SM_approx (wing AC only)', sm_approx, '')
+        note = ('stable (CG fwd of wing AC)' if sm_approx > 0
+                else 'UNSTABLE -- CG aft of wing AC')
+        print(f'  {"  note":<33}   {note}')
+
+    print_cg_detail(prob, cg_est)
 
     if PRINT_AERO_DETAIL:
         print_aero_detail(prob)

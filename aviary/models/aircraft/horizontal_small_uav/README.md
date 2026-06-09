@@ -95,6 +95,9 @@ before running.
 | `CyBetaVtp` / `CyDeltaRudder` | `aviary/subsystems/aerodynamics/flops_based/cy_beta_vtp.py` | Side-force derivatives for Ny constraint |
 | `LateralLoadFactor` | `aviary/subsystems/aerodynamics/flops_based/lateral_load_factor.py` | Ny = CY_beta*beta + CY_delta_r*delta_r (q*S) / W |
 | `LongitudinalLoadFactor` | `aviary/subsystems/aerodynamics/flops_based/lateral_load_factor.py` | Nz = CL_alpha*alpha_max (q*S) / W |
+| `MACGeometryComp` | `aviary/subsystems/aerodynamics/flops_based/surface_geometry.py` | MAC chord, spanwise station, and body-frame position (x, z) |
+| `MachCriticalComp` | `aviary/subsystems/aerodynamics/flops_based/mach_critical.py` | Weisshaar M_DD / M_crit; constrained M_crit >= DASH_MACH + 0.05 |
+| `CGEstimatorGroup` / `CGComputeComp` | `aviary/subsystems/geometry/flops_based/cg_estimator.py` | Weighted-average aircraft CG from component mass list; bypass mode available |
 | `FuelBudgetEstimate` | `run_horizontal_small_uav.py` (inline) | Available fuel = gross − empty − payload − engine |
 
 Component-level formulas, I/O tables, and worked examples are in:
@@ -102,6 +105,159 @@ Component-level formulas, I/O tables, and worked examples are in:
 - [README_htail_geometry.md](../../geometry/flops_based/README_htail_geometry.md)
 - [README_lift_curve_slope.md](../../aerodynamics/flops_based/README_lift_curve_slope.md)
 - [README_lateral_stability.md](../../aerodynamics/flops_based/README_lateral_stability.md)
+
+---
+
+## Aircraft Reference Frame
+
+Body-fixed coordinates, origin at the **nose tip**:
+
+| Axis | Direction | Units |
+|------|-----------|-------|
+| x | Positive AFT (fuselage station from nose) | m |
+| y | Positive STARBOARD | m |
+| z | Positive DOWN | m |
+
+Note: z-down differs from FLOPS (which uses z-up).  All component apex positions
+in the model are x-stations measured aft from the nose; all values are positive.
+
+---
+
+## Wing Mean Aerodynamic Chord
+
+Computed live by `MACGeometryComp` (`surface_geometry.py`) so MAC position updates
+automatically when span or area change as design variables.
+
+### Formulas
+
+```
+c_r    = 2 * S / (b * (1 + lambda))              root chord from trapezoidal area
+
+c_mac  = (2/3) * c_r * (1 + lambda + lambda^2)   mean aerodynamic chord
+                      / (1 + lambda)
+
+y_mac  = (b / 6) * (1 + 2*lambda) / (1 + lambda) spanwise BL of MAC from centreline
+
+tan(Lambda_LE) = tan(Lambda_c4) + c_r*(1 - lambda)/b    LE sweep from c/4 sweep
+
+x_mac_le = x_apex + y_mac * tan(Lambda_LE)       MAC LE x-station from nose
+z_mac_le = z_apex - y_mac * tan(dihedral)         MAC LE z-station (- because up-dihedral
+                                                   lifts MAC above root; z positive down)
+x_mac_c4 = x_mac_le + c_mac / 4                  MAC quarter-chord (aero centre x)
+```
+
+### Inputs / Outputs
+
+| Variable | Symbol | Units | Source |
+|---|---|---|---|
+| `surface_area` | S | m² | `aircraft:wing:area` (DV) |
+| `surface_span` | b | m | `aircraft:wing:span` (DV) |
+| `surface_taper` | lambda | — | CSV |
+| `surface_sweep_c4` | Lambda_c4 | deg | CSV |
+| `dihedral_deg` | Gamma | deg | CSV |
+| `wing_x_apex` | x_apex | m | `load_cond` (geometric input) |
+| `wing_z_apex` | z_apex | m | `load_cond` (geometric input) |
+| **`wing_root_chord`** | c_r | m | output |
+| **`wing_c_mac`** | c_mac | m | output |
+| **`wing_y_mac`** | y_mac | m | output |
+| **`wing_x_mac_le`** | x_mac_le | m | output |
+| **`wing_z_mac_le`** | z_mac_le | m | output |
+| **`wing_x_mac_c4`** | x_mac_c4 | m | output |
+
+### SpaJeti Numerical Example
+
+Input baseline: b = 1.8 m, S = 0.45 m², lambda = 0.6, sweep_c4 = 0 deg,
+dihedral = 3 deg, x_apex = 0.80 m, z_apex = 0.00 m.
+
+```
+c_r      = 2 * 0.45 / (1.8 * 1.6)         = 0.313 m
+c_mac    = (2/3) * 0.313 * 1.96 / 1.6     = 0.255 m
+y_mac    = (1.8/6) * 2.2 / 1.6            = 0.413 m  (from CL; 46% of half-span)
+tan_LE   = tan(0) + 0.313 * 0.4 / 1.8     = 0.0694  =>  Lambda_LE = 3.97 deg
+x_mac_le = 0.80 + 0.413 * 0.0694          = 0.829 m
+z_mac_le = 0.00 - 0.413 * tan(3 deg)      = -0.022 m (MAC is above nose datum)
+x_mac_c4 = 0.829 + 0.255 / 4              = 0.893 m  (44.6 % of 2.0 m fuselage)
+```
+
+The MAC quarter-chord falls at 44.6 % of the fuselage length aft of the nose.
+This is the x-reference for static margin and CG travel calculations.
+
+---
+
+## Centre of Gravity Estimator
+
+Computed by `CGEstimatorGroup` (`cg_estimator.py`) using the standard component
+weighted sum:
+
+```
+x_cg = sum(m_i * x_i) / sum(m_i)    (and likewise for y_cg, z_cg)
+```
+
+### Bypass mode
+
+Set `CG_BYPASS = True` at the top of the run file to skip estimation entirely.
+The group exposes the same four output names (`x_cg`, `y_cg`, `z_cg`,
+`total_mass`) from an `IndepVarComp`; all downstream consumers are unaffected.
+
+```python
+CG_BYPASS         = False   # flip to True to go manual
+CG_X_MANUAL_M     = 0.91   # [m]  x_cg override
+CG_Y_MANUAL_M     = 0.00   # [m]  y_cg override
+CG_Z_MANUAL_M     = 0.05   # [m]  z_cg override
+CG_MASS_MANUAL_KG = 15.0   # [kg] total mass override
+```
+
+### add_component API
+
+```python
+# Fixed mass + position (known hardware)
+cg_est.add_component('camera', mass=0.15, x=0.30, y=0.05, z=0.08)
+
+# Variable mass from an OpenMDAO model-scope variable, fixed position
+cg_est.add_component('fuel', mass=av.Mission.TOTAL_FUEL, x=0.90, y=0.0, z=0.05)
+
+# Variable mass via explicit connect (non-model-scope path)
+cg_est.add_component('engine', mass='cg_engine_mass', x=1.55, y=0.0, z=0.0)
+# ... then:
+prob.model.connect(premission_propulsion_var(...), 'cg_est.cg_engine_mass')
+```
+
+### SpaJeti component list (baseline estimates)
+
+All structural masses are **placeholders** — replace with FLOPS component mass
+outputs when the weight breakdown subsystem is added.
+
+| Component | Mass | x [m] | y [m] | z [m] | Notes |
+|---|---|---|---|---|---|
+| wing_struct | 1.50 kg [P] | 0.80 | 0.0 | 0.00 | WING_X_APEX_M |
+| fuselage | 1.00 kg [P] | 1.00 | 0.0 | 0.00 | mid-body |
+| empennage | 0.25 kg [P] | 1.85 | 0.0 | 0.00 | HTP + VTP mounts |
+| vtp_pair | 0.15 kg [P] | 1.75 | 0.0 | −0.15 | above wing tips |
+| landing_gear | 0.20 kg [P] | 0.95 | 0.0 | 0.15 | below fuselage |
+| avionics | 0.25 kg [P] | 0.45 | 0.0 | 0.00 | nose bay |
+| **engine** | *optimizer* | 1.55 | 0.0 | 0.00 | SmallTurbojet mass |
+| **payload** | *optimizer* | 0.85 | 0.0 | 0.05 | CrewPayload variable |
+| **fuel** | *optimizer* | 0.90 | 0.0 | 0.05 | Mission.TOTAL_FUEL |
+
+[P] = placeholder mass.  Bold = live OpenMDAO variable.
+
+### Outputs
+
+| Variable | Units | Description |
+|---|---|---|
+| `x_cg` | m | CG x-station from nose (positive aft) |
+| `y_cg` | m | CG lateral offset (0 for symmetric) |
+| `z_cg` | m | CG z-station from nose datum (positive down) |
+| `total_mass` | kg | sum of registered component masses |
+
+An approximate static margin (wing AC only) is printed in the results summary:
+
+```
+SM_approx = (wing_x_mac_c4 - x_cg) / wing_c_mac
+```
+
+Positive = CG forward of wing aerodynamic centre = stable.  A full multi-surface
+neutral-point calculation will be added in `StaticMarginComp` (see TOOD.md).
 
 ---
 
