@@ -1,6 +1,6 @@
 # NASA Aviary — Overview
 
-> **Related:** For full detail on OpenMDAO optimization, solvers, and outputs → [OpenMDAO & MDAO Detail](<LINK_TO_OPENMDAO_PAGE>)
+> **Related:** For full detail on OpenMDAO optimization, solvers, and outputs → [OpenMDAO & MDAO Detail](https://app.notion.com/p/tytan-technologies/Methods-368667b889f080cfaae6fa5dffdd873d) Or in the file "OpenMDAO_How_To.md in Non-Native_Extension_Guides
 
 ---
 
@@ -71,9 +71,7 @@ settings:mass_method,           FLOPS   # or GASP
 - Supports hybrid wing body and truss-braced wing
 - Same empirical regression approach calibrated to lighter/smaller aircraft
 - Mission uses **2-DOF equations of motion** (lift, drag, weight, thrust)
-- Best for: **small UAVs, general aviation, unconventional configs**
-
-> Rule of thumb: **GASP for small UAVs. FLOPS for commercial-scale jets.**
+-
 
 ### ⚠️ What FLOPS and GASP Do NOT Model
 

@@ -117,16 +117,24 @@ aircraft:propulsion:engine_oil_mass_scaler,0.1,unitless
 aircraft:propulsion:misc_mass_scaler,0.1,unitless
 aircraft:propulsion:total_engine_controls_mass,0,kg
 aircraft:propulsion:total_starter_mass,0,kg
+# VTP: H-tail endplate panels.
+# num_tails=1 keeps the FLOPS/Dymos ODE VTP drag slots alive (avoids
+# characteristic_length parameter error). mass_scaler=0 and wetted_area=0
+# zero out the FLOPS mass and drag contributions.
+# area and aspect_ratio here are FLOPS-only placeholders; the design-variable
+# driven geometry comes from HTailGeometry (outputs vtp_area / vtp_ar).
 aircraft:vertical_tail:area,0.08,m**2
 aircraft:vertical_tail:aspect_ratio,1.2,unitless
 aircraft:vertical_tail:laminar_flow_lower,0,unitless
 aircraft:vertical_tail:laminar_flow_upper,0,unitless
-aircraft:vertical_tail:mass_scaler,0.1,unitless
+aircraft:vertical_tail:mass_scaler,0.0,unitless
 aircraft:vertical_tail:num_tails,1,unitless
+aircraft:vertical_tail:root_chord,0.369,m
+aircraft:vertical_tail:span,0.310,m
 aircraft:vertical_tail:sweep,20.0,deg
 aircraft:vertical_tail:taper_ratio,0.4,unitless
 aircraft:vertical_tail:thickness_to_chord,0.10,unitless
-aircraft:vertical_tail:wetted_area,0.16,m**2
+aircraft:vertical_tail:wetted_area,0.0,m**2
 aircraft:vertical_tail:wetted_area_scaler,1,unitless
 aircraft:wing:aeroelastic_tailoring_factor,0.0,unitless
 aircraft:wing:airfoil_technology,1.0,unitless
