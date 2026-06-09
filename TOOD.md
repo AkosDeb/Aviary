@@ -363,6 +363,26 @@ Initial repo read:
 - `InducedDrag` uses geometric AR and `aircraft:wing:span_efficiency_factor`, so
   it does not currently know about `AR_eff` from the Scholz endplate correction.
 
+Started clean reimplementation:
+- `aviary/subsystems/aerodynamics/aero_utils.py` contains universal helpers for
+  Sutherland viscosity, ideal-gas density, speed of sound, Reynolds number,
+  roughness-limited Reynolds number, flat-plate `Cf`, DATCOM body/fuselage form
+  factor, Raymer fuselage form factor, DATCOM/Roskam lifting-surface `R_LS`,
+  wing/fuselage `R_wf`, and the `L'` airfoil thickness-location parameter. Use
+  these from drag, aeroelasticity, and stability code rather than duplicating
+  Reynolds/Cf/interference formulas.
+- `aviary/subsystems/aerodynamics/flops_based/parasite_drag.py` contains the first
+  `RoskamParasiteDragBuildUp` OpenMDAO component:
+      `CD0 = sum(Cf * FF * R_LS * Q * (1 + leakage) * Swet) / Sref`
+  It is array-based by component and currently supports `lifting_surface`, `body`,
+  `fuselage` (DATCOM, default for fuselage), and `raymer_fuselage` (implemented
+  for comparison but not default) form-factor kinds. Not wired into the mission drag polar yet.
+  For wing/fuselage interference, compute `R_wf` from `wing_fuselage_interference_factor`
+  and pass it through the component `interference_factor` input.
+  Output convention: drag modules return dimensionless coefficients only
+  (`CD0`, later `CDi`, and total `CD`). Drag force in Newtons must be computed in
+  a separate force component as `D = q * Sref * CD`.
+
 Questions to answer next:
 1. **Can Aviary's built-in FLOPS parasite drag be used directly?** Check whether the
    small-UAV CSV supplies realistic `WETTED_AREA`, `FINENESS`,

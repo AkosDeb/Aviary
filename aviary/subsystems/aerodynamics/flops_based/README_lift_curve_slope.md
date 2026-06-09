@@ -7,6 +7,13 @@ This document covers the two OpenMDAO components in `lift_curve_slope.py`:
 | `ScholzWingletARCorrection` | Converts H-tail VTP span into an effective wing AR increase (Scholz 2018) |
 | `LiftCurveSlopePolhamus` | Computes 3-D CL_alpha from AR, Mach, sweep, section slope (Roskam Eq. 8.22) |
 
+Related documentation:
+
+| Document | Purpose |
+|----------|---------|
+| `README_airfoil_data.md` | Airfoil section data used by lift, M_crit, and parasite drag |
+| `README_drag_build_up.md` | Roskam/DATCOM parasite drag build-up and shared aero utilities |
+| `README_lateral_stability.md` | Side-force derivatives, rudder effectiveness, and load-factor conventions |
 Intended wiring for an H-tail. **The AR correction applies to the wing (horizontal panel) only — the VTP uses a separate, uncorrected `LiftCurveSlopePolhamus` instance:**
 
 ```text
@@ -234,6 +241,10 @@ K_wf ~ 1.  It becomes relevant for d_f/b >= 0.2.
 | `wing_span` | 1.0 | m | Wing span b; only used when fuselage_diameter > 0 |
 | **`CL_alpha`** | — | 1/rad | 3-D lift curve slope with K_wf applied |
 | **`K_wf`** | — | — | Wing-fuselage interference factor (diagnostic) |
+`section_lift_slope` should come from `AirfoilData.cl_alpha_per_rad` via
+`AirfoilConstantsComp`. Other airfoil fields are used by neighboring physics:
+`section_tc` feeds the M_crit check, and `section_max_thickness_location` will
+feed the parasite-drag lifting-surface form factor.
 
 ### UAV numerical example (2026-06-08 baseline)
 
@@ -288,3 +299,29 @@ model.add_subsystem('vtp_polhamus', LiftCurveSlopePolhamus(),
     promotes_outputs=[('CL_alpha', 'CL_alpha_v')],
 )
 ```
+
+---
+
+## Validity Ranges and Safety Guards
+
+### `ScholzWingletARCorrection`
+
+| Condition | Action |
+|-----------|--------|
+| `aspect_ratio` <= 0 | `ValueError` |
+| `wing_span` <= 0 | `ValueError` |
+| `vtp_span` < 0 | `RuntimeWarning` |
+
+### `LiftCurveSlopePolhamus`
+
+| Condition | Action | Reason |
+|-----------|--------|--------|
+| `aspect_ratio` <= 0 | `ValueError` | Division by zero inside the formula |
+| `aspect_ratio` < 2.0 | `RuntimeWarning` | Polhamus/DATCOM calibrated for AR >= 2; results degrade below this limit |
+| `mach` < 0 | `ValueError` | Physically impossible |
+| `mach` >= 1.0 | `ValueError` | Prandtl-Glauert β = √(1−M²) is undefined at M ≥ 1; formula breaks |
+
+The AR < 2 threshold is a calibration limit, not a mathematical failure.
+The formula still returns a finite number for AR < 2, but the Polhamus
+accuracy assumption degrades significantly below this limit. For AR < 1 use
+a vortex-lattice or panel-method result instead.

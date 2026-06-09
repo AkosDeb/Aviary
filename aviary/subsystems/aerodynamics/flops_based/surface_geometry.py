@@ -41,6 +41,8 @@ SpaJeti example (b=1.8m, S=0.45m^2, lambda=0.6, sweep_c4=0deg, dih=3deg, x_apex=
     x_mac_c4 = 0.893 m   (0.829 + 0.255/4)
 """
 
+import warnings
+
 import numpy as np
 import openmdao.api as om
 
@@ -111,6 +113,31 @@ class MACGeometryComp(om.ExplicitComponent):
         dih    = inputs['dihedral_deg']     * (np.pi / 180.0)
         x_ap   = inputs['x_apex']
         z_ap   = inputs['z_apex']
+
+        if np.any(S <= 0.0):
+            raise ValueError(
+                f"MACGeometryComp: surface_area must be > 0; got {float(S)} m^2."
+            )
+        if np.any(b <= 0.0):
+            raise ValueError(
+                f"MACGeometryComp: surface_span must be > 0; got {float(b)} m."
+            )
+        if np.any(lam <= 0.0):
+            warnings.warn(
+                f"MACGeometryComp: surface_taper = {float(lam):.4f} <= 0. "
+                "Taper ratio must be > 0 (typical range 0.2–1.0). "
+                "Root chord c_r = 2S / (b*(1+lambda)) will be negative or infinite.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        if np.any(lam > 1.0):
+            warnings.warn(
+                f"MACGeometryComp: surface_taper = {float(lam):.4f} > 1.0. "
+                "Taper ratio > 1 means tip chord is wider than root chord; "
+                "unusual for conventional lifting surfaces.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         # Root chord from trapezoidal planform area
         c_r = 2.0 * S / (b * (1.0 + lam))

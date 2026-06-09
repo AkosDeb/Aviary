@@ -138,6 +138,9 @@ class AirfoilConstantsComp(om.IndepVarComp):
         self.add_output('section_camber',
                         val=float(a.camber_ratio), units='unitless',
                         desc=f'{a.name} maximum camber-to-chord ratio')
+        self.add_output('section_max_thickness_location',
+                        val=float(a.max_thickness_location), units='unitless',
+                        desc=f'{a.name} maximum thickness location `(x/c)_m`')
 
 
 class LiftingSurfaceGroup(om.Group):
@@ -161,6 +164,7 @@ class LiftingSurfaceGroup(om.Group):
             promotes_outputs=[
                 'section_cl_alpha', 'section_cl_max', 'section_cd_min',
                 'section_cm_ac', 'section_tc', 'section_camber',
+                'section_max_thickness_location',
             ],
         )
 

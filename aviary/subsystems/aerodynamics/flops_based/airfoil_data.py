@@ -37,6 +37,10 @@ class AirfoilData:
         Thickness-to-chord ratio t/c.
     camber_ratio : float
         Maximum camber-to-chord ratio.
+    max_thickness_location : float
+        Chordwise location of maximum thickness, `(x/c)_m`.
+        NACA 4-digit sections are approximately 0.30; many NACA 6-series
+        sections are approximately 0.40.
     re_ref : float
         Reference Reynolds number at which these values were obtained.
     """
@@ -48,6 +52,7 @@ class AirfoilData:
     cm_ac:            float
     tc_ratio:         float
     camber_ratio:     float
+    max_thickness_location: float
     re_ref:           float
 
 
@@ -63,6 +68,7 @@ NACA_0009 = AirfoilData(
     cm_ac=0.000,
     tc_ratio=0.09,
     camber_ratio=0.00,
+    max_thickness_location=0.30,
     re_ref=1.0e6,
 )
 
@@ -74,6 +80,7 @@ NACA_0012 = AirfoilData(
     cm_ac=0.000,
     tc_ratio=0.12,
     camber_ratio=0.00,
+    max_thickness_location=0.30,
     re_ref=2.0e6,
 )
 
@@ -85,6 +92,7 @@ NACA_2412 = AirfoilData(
     cm_ac=-0.047,
     tc_ratio=0.12,
     camber_ratio=0.02,
+    max_thickness_location=0.30,
     re_ref=2.0e6,
 )
 
@@ -96,6 +104,7 @@ NACA_4412 = AirfoilData(
     cm_ac=-0.099,
     tc_ratio=0.12,
     camber_ratio=0.04,
+    max_thickness_location=0.30,
     re_ref=2.0e6,
 )
 
@@ -109,5 +118,6 @@ NACA_4415 = AirfoilData(
     tc_ratio=0.15,           # 15% chord -- primary reason for choosing this section:
                               # better structural depth for spar at the cost of lower M_crit
     camber_ratio=0.04,
+    max_thickness_location=0.30,
     re_ref=2.0e6,
 )

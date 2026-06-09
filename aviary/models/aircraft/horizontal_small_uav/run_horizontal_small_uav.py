@@ -40,9 +40,18 @@ AIRCRAFT_DATA = Path(__file__).with_name('horizontal_small_uav.csv')
 EMPTY_MASS_KG = 7
 FUEL_CAPACITY_KG = 8.0
 ENGINE_MASS_LIMIT_KG = 5.0
+
+# ── Model version ─────────────────────────────────────────────────────────────
+# Bump manually in line with CHANGELOG.md:
+#   patch (x.y.Z) -- bug fix, doc tweak, parameter change
+#   minor (x.Y.0) -- new physics component or constraint
+#   major (X.0.0) -- architectural redesign (new DV set, new EOM, new mission)
+MODEL_VERSION = '1.7.3'
+
 OUTPUT_ROOT = REPO_ROOT / 'outputs'
 PROBLEM_NAME = 'run_horizontal_small_uav'
-OUTPUT_DIR = OUTPUT_ROOT / f'{PROBLEM_NAME}_out'
+VERSIONED_RUN_NAME = f'{PROBLEM_NAME}_v{MODEL_VERSION}'
+OUTPUT_DIR = OUTPUT_ROOT / f'{VERSIONED_RUN_NAME}_out'
 AVAILABLE_FUEL = 'horizontal_small_uav:available_fuel'
 FUEL_BUDGET_MARGIN = 'horizontal_small_uav:fuel_budget_margin'
 
@@ -116,7 +125,7 @@ TW_MIN = 1.5   # T/W at SLS
 # Both LongitudinalLoadFactor (Nz) and MachCriticalComp (M_DD check) use the same
 # alpha so their constraints stay consistent.  Replace with StallAlphaComp output
 # when stall-angle prediction is implemented (see TOOD.md).
-ALPHA_MAX_DEG = 12.0
+ALPHA_MAX_DEG = 15.0
 
 # ── M_crit safety check ───────────────────────────────────────────────────────
 # Constraint: M_crit >= DASH_MACH + M_CRIT_SAFETY_MARGIN
@@ -147,13 +156,6 @@ CG_MASS_MANUAL_KG = 15.0   # [kg] total mass override
 
 # ── Output detail flag ────────────────────────────────────────────────────────
 PRINT_AERO_DETAIL = True  # set False to suppress the wing/VTP/rudder aero breakdown
-
-# ── Model version ─────────────────────────────────────────────────────────────
-# Bump manually in line with CHANGELOG.md:
-#   patch (x.y.Z) -- bug fix, doc tweak, parameter change
-#   minor (x.Y.0) -- new physics component or constraint
-#   major (X.0.0) -- architectural redesign (new DV set, new EOM, new mission)
-MODEL_VERSION = '1.6.0'
 
 
 def ipopt_available():
@@ -859,7 +861,7 @@ def build_problem():
     prob = av.AviaryProblem(
         problem_type=av.ProblemType.FALLOUT,
         verbosity=av.Verbosity.VERBOSE,
-        name=PROBLEM_NAME,
+        name=VERSIONED_RUN_NAME,
         work_dir=OUTPUT_ROOT,
     )
     prob.load_inputs(aircraft_data=AIRCRAFT_DATA, phase_info=phase_info)
@@ -973,6 +975,8 @@ def main():
 
     print('\n' + '=' * 70)
     print('OPTIMIZATION RESULTS')
+    print(f'  Model version : v{MODEL_VERSION}  (SpaJeti v1.0.0 H-wing)')
+    print(f'  Output dir    : {OUTPUT_DIR}')
     print('=' * 70 + '\n')
 
     print('Aircraft Geometry:')

@@ -1,5 +1,112 @@
 # SpaJeti v1.0.0 H-wing - Model Changelog
 
+## v1.7.3 - 2026-06-09
+
+**DATCOM/Roskam lifting-surface CD0 correction factors**
+
+- Updated the local lifting-surface parasite-drag form factor to the requested
+  DATCOM/Roskam thickness term:
+  `FF = 1 + L'*(t/c) + 100*(t/c)^4`.
+- Added `airfoil_thickness_location_parameter()` with the current project
+  convention: `L'=1.2` for `(x/c)_m <= 0.30`, otherwise `L'=2.0`.
+- Added `lifting_surface_correction_factor()` as a linearized digitization of
+  Roskam Part VI Figure 4.2 for `R_LS`.
+- Added `wing_fuselage_interference_factor()` as a linearized digitization of
+  Roskam Part VI Figure 4.1 for `R_wf`, interpolated in Mach and `log10(Re_fus)`.
+- `RoskamParasiteDragBuildUp` now outputs `lifting_surface_correction_factor`
+  and multiplies lifting-surface `CD0_component` by `R_LS`; `R_wf` is intended
+  to be supplied through the existing `interference_factor` input.
+- Updated drag, airfoil, and TODO documentation to match the new formula path.
+
+Verification:
+- `python -m pytest aviary\subsystems\aerodynamics\flops_based\test\test_parasite_drag.py -q`
+  passes with 5 tests.
+
+Versioning note:
+- This is a `PATCH` bump because it corrects/refines formulas and digitized
+  empirical data in the existing v1.7 drag implementation.
+
+---
+
+## v1.7.2 - 2026-06-09
+
+**Aero documentation for drag, lift, and airfoil data**
+
+- New `README_drag_build_up.md`: documents the Roskam/DATCOM parasite drag
+  build-up, coefficient-only output convention, Reynolds number helpers,
+  Raymer roughness cutoff, roughness presets, flat-plate `Cf`, lifting-surface
+  form factor, DATCOM/Raymer body form factors, OpenMDAO inputs/outputs, and
+  current wiring status.
+- New `README_airfoil_data.md`: documents `AirfoilData`, the current airfoil
+  catalog, `(x/c)_m` maximum-thickness-location convention, and how airfoil data
+  feeds lift, M_crit, and future parasite-drag wiring.
+- Updated `README_lift_curve_slope.md` with links to the airfoil and drag docs
+  and a note that `AirfoilConstantsComp` is the source of section data for lift,
+  M_crit, and parasite drag.
+
+Versioning note:
+- This is a `PATCH` bump because it is documentation only.
+
+---
+
+## v1.7.1 - 2026-06-09
+
+**Raymer roughness cutoff and max-thickness-location data**
+
+- `aero_utils.py` now implements Raymer roughness-limited cutoff Reynolds number:
+  - subsonic: `Re_co = 38 * (l/k)**1.053`
+  - transonic/supersonic: `Re_co = 44 * (l/k)**1.053 * M**1.16`
+- Added roughness-height presets from Raymer/Hornung notes:
+  aluminum, flat coating, unpolished sheet, polished sheet, and flat CFK.
+- Clarified lifting-surface form factor input as `(x/c)_m`, the airfoil maximum
+  thickness location. NACA 4-digit catalog entries now carry
+  `max_thickness_location=0.30`; NACA 6-series style sections should use ~0.40.
+- `AirfoilConstantsComp` now exposes `section_max_thickness_location` for future
+  parasite-drag wiring.
+
+Verification:
+- `python -m pytest aviary\subsystems\aerodynamics\flops_based\test\test_parasite_drag.py -q`
+  passes with 4 tests.
+
+Versioning note:
+- This is a `PATCH` bump because it corrects/formalizes formulas and adds airfoil
+  data to the existing v1.7.0 drag scaffold.
+
+---
+
+## v1.7.0 - 2026-06-09
+
+**Roskam/DATCOM parasite drag build-up scaffold**
+
+- New file `aviary/subsystems/aerodynamics/aero_utils.py`:
+  reusable aero utilities for Sutherland viscosity, ideal-gas density, speed of
+  sound, Reynolds number, roughness cutoff, flat-plate `Cf`, DATCOM body/fuselage
+  form factor, Raymer fuselage form factor, and lifting-surface form factor.
+- New file `aviary/subsystems/aerodynamics/flops_based/parasite_drag.py`:
+  `RoskamParasiteDragBuildUp`, an OpenMDAO component for component-wise parasite
+  drag coefficient build-up:
+
+      CD0 = sum(Cf * FF * Q * (1 + leakage) * Swet) / Sref
+
+- Output convention locked in: drag modules return dimensionless coefficients
+  (`CD0`, later `CDi`, and total `CD`). Force in Newtons belongs in a separate
+  `D = q*Sref*CD` force component.
+- `component_kind='fuselage'` uses the DATCOM body/fuselage form factor by
+  default. `component_kind='raymer_fuselage'` is available only for comparison.
+- New pytest-style tests in
+  `aviary/subsystems/aerodynamics/flops_based/test/test_parasite_drag.py`.
+
+Verification:
+- `python -m pytest aviary\subsystems\aerodynamics\flops_based\test\test_parasite_drag.py -q`
+  passes with 3 tests.
+
+Versioning note:
+- This is a `MINOR` bump because it adds a new physics component / reusable aero
+  utility layer. Use `PATCH` only for fixes/docs/parameter tweaks, and `MAJOR`
+  only for architecture-level changes such as a new DV set, EOM, or mission structure.
+
+---
+
 ## v1.6.0 - 2026-06-09
 
 **Wing t/c design variable for the M_crit constraint**

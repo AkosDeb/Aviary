@@ -9,6 +9,8 @@ Typical wiring for an H-tail wing (horizontal panel with VTP endplates):
     ScholzWingletARCorrection.AR_eff -> LiftCurveSlopePolhamus.aspect_ratio
 """
 
+import warnings
+
 import numpy as np
 import openmdao.api as om
 
@@ -111,6 +113,22 @@ class ScholzWingletARCorrection(om.ExplicitComponent):
         h   = inputs['vtp_span']
         b_h = inputs['wing_span']
 
+        if np.any(AR <= 0.0):
+            raise ValueError(
+                f"ScholzWingletARCorrection: aspect_ratio must be > 0; got {float(AR)}."
+            )
+        if np.any(b_h <= 0.0):
+            raise ValueError(
+                f"ScholzWingletARCorrection: wing_span must be > 0; got {float(b_h)} m."
+            )
+        if np.any(h < 0.0):
+            warnings.warn(
+                f"ScholzWingletARCorrection: vtp_span = {float(h):.4f} m < 0. "
+                "Negative VTP span is physically invalid.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
         span_ratio = 1.0 + 2.0 * h / (self._k_wl * b_h)
         k_h        = span_ratio ** 2 * self._split_penalty
 
@@ -209,6 +227,29 @@ class LiftCurveSlopePolhamus(om.ExplicitComponent):
         sweep_c4 = inputs['sweep_c4_deg'] * (np.pi / 180.0)
         d_f      = inputs['fuselage_diameter']
         b        = inputs['wing_span']
+
+        if np.any(AR <= 0.0):
+            raise ValueError(
+                f"LiftCurveSlopePolhamus: aspect_ratio must be > 0; got AR={float(AR)}."
+            )
+        if np.any(AR < 2.0):
+            warnings.warn(
+                f"LiftCurveSlopePolhamus: aspect_ratio = {float(AR):.3f} < 2.0. "
+                "The Polhamus/DATCOM formula is calibrated for AR >= 2; results at "
+                "lower AR may be unreliable.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        if np.any(M < 0.0):
+            raise ValueError(
+                f"LiftCurveSlopePolhamus: Mach number must be >= 0; got M={float(M)}."
+            )
+        if np.any(M >= 1.0):
+            raise ValueError(
+                f"LiftCurveSlopePolhamus: Mach number must be < 1 (subsonic only); "
+                f"got M={float(M)}. The Prandtl-Glauert factor beta=sqrt(1-M^2) is "
+                "undefined at M >= 1."
+            )
 
         # Semi-chord sweep from quarter-chord sweep
         # tan(Λ_n) = tan(Λ_m) − 4(n−m)/AR · (1−λ)/(1+λ),  n=0.5, m=0.25 → 4·0.25 = 1
