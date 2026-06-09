@@ -22,7 +22,7 @@ from aviary.subsystems.aerodynamics.aero_utils import (
 )
 
 
-SURFACE_KINDS = ('lifting_surface', 'body', 'fuselage', 'raymer_fuselage')
+SURFACE_KINDS = ('lifting_surface', 'vtp', 'body', 'fuselage', 'raymer_fuselage')
 
 
 class RoskamParasiteDragBuildUp(om.ExplicitComponent):
@@ -30,8 +30,12 @@ class RoskamParasiteDragBuildUp(om.ExplicitComponent):
 
     Roskam Part VI Sections 4.3.1.1-4.3.1.3 build-up:
 
-    Lifting surfaces (wing, HTP, VTP -- component_kind = 'lifting_surface'):
-        CD0 = Cf * FF * R_LS * R_wf * (1 + K_LP) * Swet / Sref
+    Lifting surfaces — fuselage-attached (wing, HTP -- component_kind = 'lifting_surface'):
+        CD0 = Cf * FF * R_LS * (R_wf * R_h) * (1 + K_LP) * Swet / Sref
+
+    H-wing VTP panels — wingtip-attached (component_kind = 'vtp'):
+        CD0 = Cf * FF * R_LS * (1.0  * R_h) * (1 + K_LP) * Swet / Sref
+        R_wf = 1.0 for wingtip-attached surfaces (no fuselage interference).
 
     Fuselage (component_kind = 'fuselage' or 'raymer_fuselage'):
         CD0 = Cf_fus * FF_fus * R_wf * (1 + K_LP) * Swet_fus / Sref
@@ -47,8 +51,10 @@ class RoskamParasiteDragBuildUp(om.ExplicitComponent):
                                   or 1 + 60/f^3 + f/400          (bodies, f = l/d)
         R_LS  -- lifting-surface compressibility correction (DATCOM table, Mach x cos(sweep))
         R_wf  -- wing-fuselage interference factor (DATCOM table, Mach x Re_fus);
-                 applied to BOTH lifting surfaces and fuselage (Roskam Eq. 4.30);
-                 use R_wf = 1.0 for an isolated fuselage with no wing
+                 applied to fuselage-attached lifting surfaces and fuselage (Roskam Eq. 4.30)
+        R_h   -- H-wing junction interference factor (scalar input h_wing_interference_factor);
+                 accounts for the wingtip wing-VTP junction drag; applied to all
+                 'lifting_surface' and 'vtp' components
         Q     -- user-supplied interference factor; only for external bodies / nacelles
         K_LP  -- leakage and protuberance fraction
         Swet  -- exposed component wetted area
@@ -118,6 +124,13 @@ class RoskamParasiteDragBuildUp(om.ExplicitComponent):
             desc='Interference factor Q for external body/nacelle components only '
                  '(component_kind="body"). Lifting surfaces and fuselage both use the '
                  'DATCOM R_wf table (Roskam Eq. 4.30); this input is ignored for them.',
+        )
+        self.add_input(
+            'h_wing_interference_factor', val=1.0, units='unitless',
+            desc='H-wing junction interference factor R_h. Accounts for the wingtip '
+                 'wing-VTP junction drag penalty in an H-tail layout. Applied as a '
+                 'multiplier to all lifting_surface and vtp components. '
+                 'Set to 1.0 for conventional (fuselage-attached) surfaces only.',
         )
         self.add_input('leakage_protuberance_factor', val=np.zeros(nc), units='unitless')
 
@@ -191,6 +204,7 @@ class RoskamParasiteDragBuildUp(om.ExplicitComponent):
         fineness = inputs['fineness_ratio']
         fuselage_length = float(inputs['fuselage_length'].ravel()[0])
         q_body = inputs['interference_factor']
+        h_wing = float(inputs['h_wing_interference_factor'].ravel()[0])
         leakage = inputs['leakage_protuberance_factor']
 
         # Per-component Reynolds number (characteristic length = MAC or body length)
@@ -214,7 +228,7 @@ class RoskamParasiteDragBuildUp(om.ExplicitComponent):
         ff = np.ones_like(cf)
         r_ls = np.ones_like(cf)
         for idx, kind in enumerate(self.options['component_kinds']):
-            if kind == 'lifting_surface':
+            if kind in ('lifting_surface', 'vtp'):
                 ff[:, idx] = form_factor_lifting_surface(
                     tc[idx],
                     max_thickness_location_over_chord=x_c_m[idx],
@@ -229,12 +243,18 @@ class RoskamParasiteDragBuildUp(om.ExplicitComponent):
                 ff[:, idx] = form_factor_datcom_body(fineness[idx])
 
         # Effective interference factor (Roskam Part VI, Sections 4.3.1.1-4.3.1.3):
-        #   lifting_surface + fuselage/raymer_fuselage -> R_wf from DATCOM table
-        #   body (nacelles, external pods)             -> user-supplied Q
+        #   lifting_surface  -> R_wf (fuselage) * R_h (H-wing junction)
+        #   vtp              -> 1.0             * R_h (wingtip-attached; no fuselage R_wf)
+        #   fuselage         -> R_wf from DATCOM table
+        #   body             -> user-supplied Q
         q_eff = np.empty((len(mach), self.nc))
         for idx, kind in enumerate(self.options['component_kinds']):
-            if kind in ('lifting_surface', 'fuselage', 'raymer_fuselage'):
-                q_eff[:, idx] = r_wf      # same R_wf for both wing and fuselage
+            if kind == 'lifting_surface':
+                q_eff[:, idx] = r_wf * h_wing
+            elif kind == 'vtp':
+                q_eff[:, idx] = h_wing        # R_wf_vtp = 1 (wingtip, not fuselage)
+            elif kind in ('fuselage', 'raymer_fuselage'):
+                q_eff[:, idx] = r_wf
             else:
                 q_eff[:, idx] = q_body[idx]   # user Q for external bodies / nacelles
 

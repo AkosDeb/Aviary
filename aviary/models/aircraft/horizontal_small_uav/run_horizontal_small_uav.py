@@ -123,8 +123,11 @@ TW_MIN = 1.5   # T/W at SLS
 
 # ── Alpha max for Nz and M_DD constraints ────────────────────────────────────
 # Both LongitudinalLoadFactor (Nz) and MachCriticalComp (M_DD check) use the same
-# alpha so their constraints stay consistent.  Replace with StallAlphaComp output
-# when stall-angle prediction is implemented (see TOOD.md).
+# alpha so their constraints stay consistent.
+# Source: NACA 4415 polar at Re ~ 2e6 from airfoiltools.com
+# (http://airfoiltools.com/airfoil/details?airfoil=naca4415-il).
+# Stall occurs at approximately alpha = 15 deg -- accurate enough for current
+# design phase.  Replace with StallAlphaComp output when implemented (see TOOD.md).
 ALPHA_MAX_DEG = 15.0
 
 # ── M_crit safety check ───────────────────────────────────────────────────────
@@ -153,6 +156,17 @@ CG_X_MANUAL_M     = 0.91   # [m] x_cg override -- only active when CG_BYPASS=Tru
 CG_Y_MANUAL_M     = 0.00   # [m] y_cg override
 CG_Z_MANUAL_M     = 0.05   # [m] z_cg override
 CG_MASS_MANUAL_KG = 15.0   # [kg] total mass override
+
+# ── H-wing junction interference factor ──────────────────────────────────────
+# Applied to both wing (on top of R_wf_fus) and VTP (with R_wf_vtp = 1.0).
+# Represents the parasite drag penalty at the wingtip wing-VTP junction.
+# Roskam/Raymer wing-winglet junctions: 1.03-1.08 for a clean, well-faired joint.
+H_WING_INTERFERENCE_FACTOR = 1.04
+
+# ── ISA 5 000 m standard atmosphere ──────────────────────────────────────────
+# Used by the parasite drag report (dash flight condition, same as Ny/Nz constraint).
+CRUISE_STATIC_PRESSURE_PA = 54048.0   # Pa
+CRUISE_TEMPERATURE_K       = 255.65   # K
 
 # ── Output detail flag ────────────────────────────────────────────────────────
 PRINT_AERO_DETAIL = True  # set False to suppress the wing/VTP/rudder aero breakdown
@@ -946,6 +960,145 @@ def build_problem():
     return prob, engine_mass_upper_kg, cg_est
 
 
+def print_parasite_drag_detail(prob):
+    """Roskam/DATCOM parasite drag breakdown at the dash flight condition.
+
+    Computed as a post-processing step using helper functions directly (no
+    OpenMDAO solve overhead).  Not connected to the optimizer drag polar.
+    """
+    from aviary.subsystems.aerodynamics.aero_utils import (
+        flat_plate_skin_friction_coeff,
+        form_factor_datcom_body,
+        form_factor_lifting_surface,
+        lifting_surface_correction_factor,
+        reynolds_number_from_mach,
+        wing_fuselage_interference_factor,
+    )
+
+    print('\n' + '=' * 70)
+    print('PARASITE DRAG BREAKDOWN (Roskam/DATCOM)')
+    print(f'  Flight point  : M = {DASH_MACH:.3f},  '
+          f'P = {CRUISE_STATIC_PRESSURE_PA:.0f} Pa,  '
+          f'T = {CRUISE_TEMPERATURE_K:.2f} K  (ISA 5 000 m)')
+    print(f'  R_h (H-wing)  : {H_WING_INTERFERENCE_FACTOR:.4f}  '
+          f'(wing-VTP wingtip junction; applied to wing and VTP)')
+    print(f'  R_wf_vtp      : 1.0  (VTP wingtip-mounted, no fuselage interference)')
+    print(f'  Base drag (fus aft): EXCLUDED  (engine exhaust fills base)')
+    print('=' * 70)
+
+    _VTP_AVG_CHORD = getattr(av.Aircraft.VerticalTail, 'AVERAGE_CHORD',
+                              'aircraft:vertical_tail:average_chord')
+
+    wing_area       = safe_get(prob, av.Aircraft.Wing.AREA,                    'm**2')
+    wing_c_mac      = safe_get(prob, 'wing_c_mac',                              'm')
+    wing_root_chord = safe_get(prob, 'wing_root_chord',                         'm')
+    wing_sweep      = safe_get(prob, av.Aircraft.Wing.SWEEP,                   'deg')
+    wing_tc         = safe_get(prob, 'wing_section_tc')
+
+    vtp_area        = safe_get(prob, av.Aircraft.VerticalTail.AREA,            'm**2')
+    vtp_avg_chord   = safe_get(prob, _VTP_AVG_CHORD,                           'm')
+    vtp_sweep       = safe_get(prob, av.Aircraft.VerticalTail.SWEEP,           'deg')
+    vtp_tc          = safe_get(prob, av.Aircraft.VerticalTail.THICKNESS_TO_CHORD)
+
+    fus_length      = safe_get(prob, av.Aircraft.Fuselage.LENGTH,              'm')
+    fus_wetted      = safe_get(prob, av.Aircraft.Fuselage.WETTED_AREA,         'm**2')
+
+    if any(isinstance(v, str) for v in (
+        wing_area, wing_c_mac, wing_root_chord, wing_sweep, wing_tc,
+        vtp_area, vtp_avg_chord, vtp_sweep, vtp_tc, fus_length, fus_wetted,
+    )):
+        print('  (one or more geometry values not available -- skipping)')
+        return
+
+    # ── Wetted areas ───────────────────────────────────────────────────────────
+    # Wing: (planform - buried panel at fuselage root) × 2 sides
+    s_buried  = (FUSELAGE_EQUIV_DIAMETER_M / 2.0) * wing_root_chord  # one-sided
+    swet_wing = (wing_area - s_buried) * 2.0
+
+    # VTP: S_wet = S_ref_vtp_total × 2  where S_ref_vtp_total = 2 panels × vtp_area
+    # = 4 × vtp_area_per_panel.  Conservative: no junction cutout at wing-VTP root.
+    swet_vtp = vtp_area * 4.0
+
+    swet_fus = fus_wetted
+
+    # ── Reynolds numbers ───────────────────────────────────────────────────────
+    mach = DASH_MACH
+    p_s  = CRUISE_STATIC_PRESSURE_PA
+    t_s  = CRUISE_TEMPERATURE_K
+
+    re_wing = reynolds_number_from_mach(mach, p_s, t_s, wing_c_mac)
+    re_vtp  = reynolds_number_from_mach(mach, p_s, t_s, vtp_avg_chord)
+    re_fus  = reynolds_number_from_mach(mach, p_s, t_s, fus_length)
+
+    # ── Skin-friction coefficients (fully turbulent) ───────────────────────────
+    cf_wing = flat_plate_skin_friction_coeff(re_wing, mach)
+    cf_vtp  = flat_plate_skin_friction_coeff(re_vtp,  mach)
+    cf_fus  = flat_plate_skin_friction_coeff(re_fus,  mach)
+
+    # ── Form factors ───────────────────────────────────────────────────────────
+    ff_wing = form_factor_lifting_surface(
+        wing_tc, max_thickness_location_over_chord=WING_AIRFOIL.max_thickness_location,
+    )
+    ff_vtp  = form_factor_lifting_surface(
+        vtp_tc,  max_thickness_location_over_chord=VTP_AIRFOIL.max_thickness_location,
+    )
+    fus_fineness = fus_length / FUSELAGE_EQUIV_DIAMETER_M
+    ff_fus  = form_factor_datcom_body(fus_fineness)
+
+    # ── R_LS: use quarter-chord sweep as proxy for max-thickness-line sweep ───
+    r_ls_wing = lifting_surface_correction_factor(mach, np.cos(np.deg2rad(wing_sweep)))
+    r_ls_vtp  = lifting_surface_correction_factor(mach, np.cos(np.deg2rad(vtp_sweep)))
+
+    # ── Interference factors ───────────────────────────────────────────────────
+    r_wf = wing_fuselage_interference_factor(re_fus, mach)   # fuselage-wing
+    r_h  = H_WING_INTERFERENCE_FACTOR                         # H-wing junction
+
+    # Wing: R_wf (fuselage junction) × R_h (wingtip junction)
+    # VTP:  1.0  (no fuselage junction)  × R_h
+    # Fus:  R_wf only
+    q_wing = r_wf * r_h
+    q_vtp  = r_h
+    q_fus  = r_wf
+
+    # ── CD0 per component (K_LP = 0, clean) ───────────────────────────────────
+    s_ref    = wing_area
+    cd0_wing = cf_wing * ff_wing * r_ls_wing * q_wing * swet_wing / s_ref
+    cd0_vtp  = cf_vtp  * ff_vtp  * r_ls_vtp  * q_vtp  * swet_vtp  / s_ref
+    cd0_fus  = cf_fus  * ff_fus              * q_fus  * swet_fus  / s_ref
+    cd0_tot  = cd0_wing + cd0_vtp + cd0_fus
+
+    # ── Print table ────────────────────────────────────────────────────────────
+    print()
+    hdr = (f'  {"Component":<12} {"Swet[m²]":>9} {"L[m]":>7} {"Re":>10}'
+           f' {"Cf":>9} {"FF":>7} {"R_LS":>6} {"Q_eff":>7} {"CD0":>9} {"share":>7}')
+    sep = '  ' + '-' * (len(hdr) - 2)
+    print(hdr)
+    print(sep)
+
+    rows = [
+        ('Wing',     swet_wing, wing_c_mac,    re_wing, cf_wing, ff_wing, r_ls_wing, q_wing, cd0_wing),
+        ('VTP×2',    swet_vtp,  vtp_avg_chord, re_vtp,  cf_vtp,  ff_vtp,  r_ls_vtp,  q_vtp,  cd0_vtp),
+        ('Fuselage', swet_fus,  fus_length,    re_fus,  cf_fus,  ff_fus,  1.0,       q_fus,  cd0_fus),
+    ]
+    for name, swet, length, re, cf, ff, r_ls, q, cd0 in rows:
+        pct = 100.0 * cd0 / cd0_tot if cd0_tot > 0.0 else 0.0
+        print(f'  {name:<12} {swet:>9.4f} {length:>7.4f} {re:>10.3e}'
+              f' {cf:>9.5f} {ff:>7.4f} {r_ls:>6.4f} {q:>7.4f} {cd0:>9.5f} {pct:>6.1f}%')
+
+    print(sep)
+    print(f'  {"TOTAL":<12} {swet_wing+swet_vtp+swet_fus:>9.4f} {"":>7} {"":>10}'
+          f' {"":>9} {"":>7} {"":>6} {"":>7} {cd0_tot:>9.5f} {"100.0%":>7}')
+
+    print()
+    print(f'  Notes:')
+    print(f'    R_wf = {r_wf:.4f}  (DATCOM Fig 4.1, Re_fus = {re_fus:.3e}, M = {mach:.3f})')
+    print(f'    VTP×2 Swet = 4 × Aircraft.VerticalTail.AREA  '
+          f'(2 panels × 2 sides, no cutout -- conservative)')
+    print(f'    Wing buried panel at root ≈ {s_buried:.5f} m²  '
+          f'(d_fus/2 × c_root)')
+    print(f'    Fuselage fineness l/d = {fus_fineness:.1f}')
+
+
 def build_xdsm_problem():
     prob, _, _cg = build_problem()
     prob.final_setup()
@@ -1084,6 +1237,7 @@ def main():
 
     if PRINT_AERO_DETAIL:
         print_aero_detail(prob)
+        print_parasite_drag_detail(prob)
 
     print('\n' + '=' * 70)
     print('OPTIMIZATION COMPLETE')

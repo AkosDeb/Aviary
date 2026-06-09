@@ -25,11 +25,20 @@ Later induced and total drag modules should follow the same convention:
 
 The build-up uses three separate interference paths:
 
-**Lifting surfaces** (wing, HTP, VTP — `component_kind = 'lifting_surface'`):
+**Fuselage-attached lifting surfaces** (wing, HTP — `component_kind = 'lifting_surface'`):
 
 ```text
-CD0 = Cf * FF * R_LS * R_wf * (1 + K_LP) * Swet / Sref
+CD0 = Cf * FF * R_LS * (R_wf * R_h) * (1 + K_LP) * Swet / Sref
 ```
+
+**H-wing VTP panels — wingtip-attached** (`component_kind = 'vtp'`):
+
+```text
+CD0 = Cf * FF * R_LS * (1.0 * R_h) * (1 + K_LP) * Swet / Sref
+```
+
+R_wf = 1.0 for wingtip-attached surfaces (no fuselage interference).
+Conservative VTP wetted area: `Swet_vtp = 2 × Aircraft.VerticalTail.AREA × 2` (2 panels, 2 sides, no junction cutout).
 
 **Fuselage** (`component_kind = 'fuselage'` or `'raymer_fuselage'`):
 
@@ -52,8 +61,9 @@ CD0 = Cf * FF * Q * (1 + K_LP) * Swet / Sref
 | `Cf` | flat-plate skin-friction coefficient (mixed lam/turb) | Raymer formula, Re-based |
 | `FF` | form factor | DATCOM thickness formula (surfaces) or body formula (fuselages) |
 | `R_LS` | lifting-surface compressibility correction | DATCOM table: Mach × cos(Λ_t/c); 1.0 for bodies |
-| `R_wf` | wing-fuselage interference factor | DATCOM table: Mach × Re_fus (driven by `fuselage_length`); applied to both wing and fuselage (Roskam Eq. 4.30) |
-| `Q` | interference factor for bodies/nacelles | user input `interference_factor`; **ignored for lifting surfaces and fuselage** |
+| `R_wf` | wing-fuselage interference factor | DATCOM table: Mach × Re_fus (driven by `fuselage_length`); applied to fuselage-attached lifting surfaces and fuselage (Roskam Eq. 4.30) |
+| `R_h` | H-wing junction factor | scalar input `h_wing_interference_factor`; applied to all `lifting_surface` and `vtp` components; 1.04 typical for clean wingtip-VTP junction |
+| `Q` | interference factor for bodies/nacelles | user input `interference_factor`; **ignored for lifting surfaces, vtp, and fuselage** |
 | `K_LP` | leakage and protuberance fraction | user input `leakage_protuberance_factor` |
 | `Swet` | **exposed** component wetted area | see Exposed Wetted Area Convention |
 | `Sref` | aircraft reference area | user input `reference_area` |
@@ -264,12 +274,13 @@ Outputs:
 
 Supported `component_kinds`:
 
-| Kind | Form-factor path |
-|------|------------------|
-| `lifting_surface` | DATCOM/Roskam lifting-surface thickness form factor plus `R_LS` |
-| `fuselage` | DATCOM streamlined-body form factor |
-| `body` | DATCOM streamlined-body form factor |
-| `raymer_fuselage` | Raymer fuselage alternate |
+| Kind | Form-factor path | Interference |
+|------|------------------|-------------|
+| `lifting_surface` | DATCOM/Roskam lifting-surface thickness form factor + `R_LS` | `R_wf × R_h` (fuselage-attached) |
+| `vtp` | same as `lifting_surface` | `R_h` only (R_wf = 1; wingtip-attached) |
+| `fuselage` | DATCOM streamlined-body form factor | `R_wf` |
+| `body` | DATCOM streamlined-body form factor | user `Q` |
+| `raymer_fuselage` | Raymer fuselage alternate | `R_wf` |
 
 ---
 

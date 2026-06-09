@@ -121,11 +121,17 @@ directly reduces M_DD, coupling the Nz and M_DD constraints through alpha_max.
 
 ---
 
-## alpha_max / CL_max from stall <span style="color: #ef4444; font-weight: bold">[TODO]</span> — replace hardcoded alpha in Nz and M_crit
+## alpha_max / CL_max from stall <span style="color: #f59e0b; font-weight: bold">[PARTIAL — alpha_max set from airfoil data; StallAlphaComp not yet wired]</span> — replace hardcoded alpha in Nz and M_crit
 
-Currently `LongitudinalLoadFactor` uses a hardcoded `alpha_max_deg = 12.0` and the
-M_crit constraint uses a fixed `cruise_cl_ref = 0.1`.  Both should be derived from
-the actual stall characteristics of the selected airfoil and 3-D finite-wing effects.
+**Current state:** `ALPHA_MAX_DEG = 15.0` in `run_horizontal_small_uav.py`.
+Source: NACA 4415 polar from [airfoiltools.com](http://airfoiltools.com/airfoil/details?airfoil=naca4415-il)
+at Re ~ 2×10⁶. The polar shows stall at approximately α = 15 deg, which is used
+as a trustworthy and accurate-enough value for the current design phase.
+Previously `alpha_max_deg = 12.0` — the 15 deg value is more physically grounded.
+
+The M_crit constraint still uses a fixed `cruise_cl_ref` (wired from `alpha_max_deg`
+and `wing_CL_alpha`), which is conservative at the stall alpha rather than the
+cruise alpha.  See step 5 below.
 
 ### Goals
 
@@ -133,17 +139,21 @@ the actual stall characteristics of the selected airfoil and 3-D finite-wing eff
    This is the physical upper limit for the Nz calculation; using a higher alpha
    overestimates Nz and gives a non-conservative constraint.
 
-2. **Replace hardcoded alpha=12 deg in Nz** — the constraint
-   `Nz = CL_alpha * alpha_max * q * S / (m*g) >= NZ_MIN` becomes physically meaningful
-   when `alpha_max` is the actual stall angle rather than an arbitrary constant.
+2. **Replace fixed alpha=15 deg in Nz** — the constraint
+   `Nz = CL_alpha * alpha_max * q * S / (m*g) >= NZ_MIN` becomes fully automatic
+   when `alpha_max` is computed from `StallAlphaComp` rather than a manually set constant.
 
 3. **Feed CL_max into M_crit** — the highest wing CL the aircraft will actually
    experience (at minimum cruise speed or in pull-up) should replace the fixed
-   `cruise_cl_ref = 0.1` in `MachCriticalComp`.  A higher operating CL reduces M_crit.
+   `cruise_cl_ref` in `MachCriticalComp`.  A higher operating CL reduces M_crit.
 
 ### Steps
 
-1. **3-D CL_max from airfoil data** — estimate wing CL_max using the Diederich / DATCOM
+1. **PARTIAL** — `alpha_max = 15 deg` set manually from NACA 4415 airfoiltools.com
+   polar (Re ~ 2e6).  Accurate enough for current design phase.
+   Full automation via `StallAlphaComp` is deferred.
+
+2. **[TODO] 3-D CL_max from airfoil data** — estimate wing CL_max using the Diederich / DATCOM
    taper-sweep correction:
 
        CL_max_3D = k_CL * CL_max_2D
@@ -151,30 +161,30 @@ the actual stall characteristics of the selected airfoil and 3-D finite-wing eff
    where `k_CL ~ 0.9` for moderate taper (DATCOM chart, Section 4.1.1.4) and
    `CL_max_2D` comes from `AirfoilData.cl_max` (already in the catalog).
 
-2. **alpha_stall from 3-D lift curve** — invert the Polhamus lift curve:
+3. **[TODO] alpha_stall from 3-D lift curve** — invert the Polhamus lift curve:
 
        alpha_stall = CL_max_3D / CL_alpha_3D
 
    where `CL_alpha_3D` is `wing_CL_alpha` from `WingSurface`.
 
-3. **OpenMDAO component** — implement `StallAlphaComp(om.ExplicitComponent)`:
+4. **[TODO] OpenMDAO component** — implement `StallAlphaComp(om.ExplicitComponent)`:
    - Inputs: `section_cl_max` (Group scope from AirfoilConstantsComp),
              `surface_CL_alpha` (from Polhamus), `k_cl_max` (default 0.9)
    - Outputs: `CL_max_3D`, `alpha_stall_deg`, `alpha_stall_rad`
    - Add as step 4 in `WingSurface.setup()` via a `_setup_stall()` hook, similar
      to `_setup_mach_critical()`.
 
-4. **Wire into `LongitudinalLoadFactor`** — replace the fixed `alpha_max_deg` input
+5. **[TODO] Wire into `LongitudinalLoadFactor`** — replace the fixed `alpha_max_deg` input
    with the `alpha_stall_deg` output from `StallAlphaComp`.
    Add a guard: `alpha_max = min(alpha_stall_deg, ALPHA_ABS_MAX)` to prevent
    unrealistic values if the solver wanders.
 
-5. **Wire CL_max into M_crit** — connect `CL_max_3D` (or `CL_cruise` from the
+6. **[TODO] Wire CL_max into M_crit** — connect `CL_max_3D` (or `CL_cruise` from the
    mission phase) to `MachCriticalComp.cruise_cl` instead of the fixed
    `cruise_cl_ref`.  Use the cruise CL (level flight) rather than CL_max for the
    M_crit check, since M_crit is most relevant at high speed (low CL), not at stall.
 
-6. **Sensitivity** — increasing t/c:
+7. **Sensitivity** — increasing t/c:
    - raises CL_alpha (higher Nz if CL_alpha*alpha_stall allows)
    - lowers M_crit (wave drag constraint gets tighter)
    The M_crit and Nz constraints together will bound the feasible t/c range once
@@ -182,7 +192,7 @@ the actual stall characteristics of the selected airfoil and 3-D finite-wing eff
 
 ---
 
-## Parasite drag <span style="color: #ef4444; font-weight: bold">[TODO]</span> — add fuselage and wing/VTP wetted-area drag
+## Parasite drag <span style="color: #f59e0b; font-weight: bold">[PARTIAL — build-up implemented; polar wiring pending]</span> — add fuselage and wing/VTP wetted-area drag
 
 The current FLOPS drag polar zeroes out VTP wetted area (`wetted_area = 0`) and uses
 a fixed fuselage wetted area in the CSV.  No component-level parasite drag breakdowns
@@ -190,22 +200,51 @@ are tracked.
 
 Steps:
 
-1. **Wing/VTP skin-friction drag** — implement a flat-plate `Cf` estimate
-   (Schlichting turbulent BL) per component:
+1. **DONE (v1.7.0–v1.7.3)** — `RoskamParasiteDragBuildUp` in `parasite_drag.py`
+   implements three separate formula paths (Roskam Part VI):
 
-       Cf = 0.455 / (log10(Re_mac))^2.58 / (1 + 0.144*M^2)^0.65
+   - **Lifting surfaces** (wing, HTP, VTP):
+     `CD0 = Cf * FF * R_LS * R_wf * (1+K_LP) * Swet / Sref`
+   - **Fuselage** (`fuselage` / `raymer_fuselage`):
+     `CD0 = Cf_fus * FF_fus * R_wf * (1+K_LP) * Swet_fus / Sref`
+     Base-pressure drag `CD0_base` is **intentionally excluded** — the SpaJeti
+     fuselage is a jet-exhaust body; the base is filled by engine outflow and
+     produces no separated-wake base drag (Roskam Eq. 4.30).
+   - **External bodies / nacelles** (`body`):
+     `CD0 = Cf * FF * Q * (1+K_LP) * Swet / Sref`
 
-   Multiply by form factor `FF` (Shevell or DATCOM) and wetted area to get `CD0_component`.
+   Full helper library in `aero_utils.py`:
+   - Sutherland viscosity, ideal-gas density, speed of sound, Reynolds number
+   - Raymer flat-plate `Cf` (compressible mixed lam/turb), roughness cutoff
+   - DATCOM body form factor, Raymer fuselage form factor, lifting-surface form factor
+   - `lifting_surface_correction_factor` — R_LS from DATCOM Fig. 4.2 (Mach × cos(Λ_t/c));
+     silent edge-hold below M=0.25; RuntimeWarning above M=0.90
+   - `wing_fuselage_interference_factor` — R_wf from DATCOM Fig. 4.1 (Mach × Re_fus,
+     log10 interpolation); ValueError for Re out-of-range or Mach > 0.90;
+     silent edge-hold below M=0.25; applied to **both** wing and fuselage
+   - Safety guards throughout: `ValueError` for hard physical violations,
+     `RuntimeWarning` for degraded-but-computable conditions
 
-2. **Fuselage drag** — use `wetted_area_fuselage * Cf_fus * FF_fus`; the fuselage
-   `FF` accounts for fineness ratio (l_f / d_f).
+   Exposed S_wet convention locked in: `Swet = (S_planform - S_inside_fuselage) × 2`
+   for lifting surfaces; full outer area for bodies/fuselage.
+   5 tests pass in `test/test_parasite_drag.py`.
 
-3. **Sum and inject** — add component drag contributions to the FLOPS `zero_lift_drag_coeff`
-   via an `ExecComp` or dedicated `ParasiteDragBuildUp` component.
+2. **DONE** — Fuselage drag is included in step 1 above.
 
-4. Enable VTP wetted area in `horizontal_small_uav.csv` (currently `wetted_area = 0`).
+3. **[TODO] Wire into mission polar** — connect `RoskamParasiteDragBuildUp` to the
+   FLOPS `zero_lift_drag_coeff` in `run_horizontal_small_uav.py`.
+   Requires live geometry inputs (wing/VTP/HTP/fuselage Swet, MAC, fineness ratios,
+   fuselage length) and a decision on whether to replace or supplement the FLOPS
+   built-in skin-friction path.
 
-5. Update `README_lateral_stability.md` and `README.md` when wired in.
+4. **DONE (v1.7.x)** — VTP wetted area: `Swet_vtp = 4 × Aircraft.VerticalTail.AREA`
+   (2 panels × 2 sides, conservative no junction cutout).  `component_kind = 'vtp'`
+   added; R_wf = 1.0 for wingtip-attached VTP; H-wing interference factor `R_h`
+   applied to both wing and VTP.
+
+5. **DONE (v1.7.x)** — `print_parasite_drag_detail(prob)` added to
+   `run_horizontal_small_uav.py`; prints Cf, FF, R_LS, Q_eff, CD0 per component
+   and total at the dash flight condition. Controlled by `PRINT_AERO_DETAIL`.
 
 ---
 
@@ -346,7 +385,7 @@ Steps:
 
 ---
 
-## Parasite drag audit <span style="color: #ef4444; font-weight: bold">[TODO]</span> -- assess Aviary built-in drag before CD_i work
+## Parasite drag audit <span style="color: #22c55e; font-weight: bold">[DONE — v1.7.x, 2026-06-09]</span> -- assess Aviary built-in drag before CD_i work
 
 Before implementing the AR_eff-consistent induced-drag correction, audit the current
 Aviary drag path and decide whether to extend it or bypass it with a small custom
@@ -363,45 +402,51 @@ Initial repo read:
 - `InducedDrag` uses geometric AR and `aircraft:wing:span_efficiency_factor`, so
   it does not currently know about `AR_eff` from the Scholz endplate correction.
 
-Started clean reimplementation:
-- `aviary/subsystems/aerodynamics/aero_utils.py` contains universal helpers for
+**Implementation decision (answered — v1.7.0):** FLOPS chain is too transport-aircraft-specific
+and too opaque for a UAV with twin VTP panels, low-Re corrections, and component-level
+reporting needs. Local clean reimplementation chosen.
+
+Current state (v1.7.3):
+
+- **`aero_utils.py`** — universal helper library (framework-agnostic):
   Sutherland viscosity, ideal-gas density, speed of sound, Reynolds number,
-  roughness-limited Reynolds number, flat-plate `Cf`, DATCOM body/fuselage form
-  factor, Raymer fuselage form factor, DATCOM/Roskam lifting-surface `R_LS`,
-  wing/fuselage `R_wf`, and the `L'` airfoil thickness-location parameter. Use
-  these from drag, aeroelasticity, and stability code rather than duplicating
-  Reynolds/Cf/interference formulas.
-- `aviary/subsystems/aerodynamics/flops_based/parasite_drag.py` contains the first
-  `RoskamParasiteDragBuildUp` OpenMDAO component:
-      `CD0 = sum(Cf * FF * R_LS * Q * (1 + leakage) * Swet) / Sref`
-  It is array-based by component and currently supports `lifting_surface`, `body`,
-  `fuselage` (DATCOM, default for fuselage), and `raymer_fuselage` (implemented
-  for comparison but not default) form-factor kinds. Not wired into the mission drag polar yet.
-  For wing/fuselage interference, compute `R_wf` from `wing_fuselage_interference_factor`
-  and pass it through the component `interference_factor` input.
-  Output convention: drag modules return dimensionless coefficients only
-  (`CD0`, later `CDi`, and total `CD`). Drag force in Newtons must be computed in
-  a separate force component as `D = q * Sref * CD`.
+  Raymer roughness-cutoff Reynolds number, flat-plate `Cf` (compressible mixed
+  lam/turb), DATCOM body and Raymer fuselage form factors, lifting-surface form
+  factor with `L'` thickness-location parameter, `lifting_surface_correction_factor`
+  (R_LS — DATCOM Fig. 4.2, Mach × cos(Λ_t/c) table), and
+  `wing_fuselage_interference_factor` (R_wf — DATCOM Fig. 4.1, Mach × Re_fus table,
+  log10 interpolation).  All functions carry safety guards (ValueError / RuntimeWarning).
+  Reuse from drag, aeroelasticity, and stability code.
 
-Questions to answer next:
-1. **Can Aviary's built-in FLOPS parasite drag be used directly?** Check whether the
-   small-UAV CSV supplies realistic `WETTED_AREA`, `FINENESS`,
-   `CHARACTERISTIC_LENGTH`, and laminar-flow inputs for wing, HTP, VTP, fuselage,
-   and nacelle. VTP wetted area is currently zero, so H-tail parasite drag is being
-   suppressed.
+- **`parasite_drag.py`** — `RoskamParasiteDragBuildUp` OpenMDAO component with three
+  separate formula paths (Roskam Part VI Sections 4.3.1.1–4.3.1.3):
 
-2. **What is missing for this configuration?** Identify gaps for twin VTP panels,
-   H-tail endplate geometry, exposed elevon/control-surface drag increments,
-   low-Reynolds-number UAV assumptions, and component-level reporting.
+      Lifting surfaces:  CD0 = Cf * FF * R_LS * R_wf * (1+K_LP) * Swet / Sref
+      Fuselage:          CD0 = Cf_fus * FF_fus * R_wf * (1+K_LP) * Swet_fus / Sref
+      Bodies/nacelles:   CD0 = Cf * FF * Q * (1+K_LP) * Swet / Sref
 
-3. **Implementation choice** -- if the FLOPS chain is adequate, wire/repair its
-   inputs and add reporting for `skin_friction_drag_coeff` / `CD0`. If it is too
-   opaque or too transport-aircraft-specific, implement a local
-   `ParasiteDragBuildUp` component in the Aviary drag module that computes wing,
-   HTP, VTP, fuselage, nacelle, and elevon/control-surface increments explicitly.
+  R_wf is computed automatically from `fuselage_length` and applied to both wing
+  and fuselage (Roskam Eq. 4.30).  Base-pressure drag is intentionally excluded —
+  the SpaJeti fuselage is a jet-exhaust body; the base is filled by engine outflow
+  and produces no separated-wake base drag.
+  Output convention: coefficients only (`CD0`, later `CDi`, total `CD`);
+  drag force `D = q*Sref*CD` belongs in a separate component.
+  5 tests pass in `test/test_parasite_drag.py`.  **Not yet wired into the mission polar.**
 
-4. **Documentation** -- record what Aviary can already compute, what it cannot,
-   and why any custom component is needed before changing the optimizer drag polar.
+Remaining questions:
+
+1. **ANSWERED** — FLOPS built-in chain not used. Local build-up is the path forward.
+
+2. **[TODO] Wire into polar** — connect `RoskamParasiteDragBuildUp` to
+   `zero_lift_drag_coeff` in `run_horizontal_small_uav.py` (see Parasite drag step 3
+   above).  Decide whether to zero out the FLOPS `SkinFrictionDrag` contribution or
+   replace it additively.
+
+3. **[TODO] VTP wetted area** — set the correct exposed Swet for each VTP panel in
+   `horizontal_small_uav.csv` (currently zero).
+
+4. **[TODO] Documentation** — update `README.md` constraints table and add a
+   `CD0_component` breakdown to `print_aero_detail` once wired.
 
 ---
 
