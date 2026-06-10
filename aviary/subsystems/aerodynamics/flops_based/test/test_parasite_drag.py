@@ -5,6 +5,7 @@ import pytest
 from aviary.subsystems.aerodynamics.aero_utils import (
     airfoil_thickness_location_parameter,
     dynamic_viscosity_sutherland,
+    exposed_wetted_area_lifting_surface,
     flat_plate_skin_friction_coeff,
     form_factor_datcom_body,
     form_factor_lifting_surface,
@@ -31,6 +32,17 @@ def test_atmosphere_and_flat_plate_helpers():
     assert mu == pytest.approx(1.7892976260350732e-5, rel=0.0, abs=1e-12)
     assert re == pytest.approx(6.989225304399539e6, rel=0.0, abs=1e-9)
     assert cf == pytest.approx(0.004433494542035681, rel=0.0, abs=1e-12)
+
+
+def test_exposed_wetted_area_helper():
+    assert exposed_wetted_area_lifting_surface(0.45, 0.05) == pytest.approx(0.80)
+    assert exposed_wetted_area_lifting_surface(
+        np.array([0.45, 0.20]),
+        np.array([0.05, 0.00]),
+    ) == pytest.approx(np.array([0.80, 0.40]))
+
+    with pytest.raises(ValueError, match='buried_planform_area cannot exceed'):
+        exposed_wetted_area_lifting_surface(0.45, 0.50)
 
 
 def test_form_factor_helpers():

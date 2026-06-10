@@ -15,7 +15,7 @@ phase_info = {
     },
     'climb': {
         'subsystem_options': {
-            'aerodynamics': {'method': 'computed'},
+            'aerodynamics': {'method': 'external'},
         },
         'user_options': {
             'num_segments': 4,
@@ -54,7 +54,7 @@ phase_info = {
     },
     'cruise': {
         'subsystem_options': {
-            'aerodynamics': {'method': 'computed'},
+            'aerodynamics': {'method': 'external'},
         },
         'user_options': {
             'num_segments': 3,
@@ -84,7 +84,7 @@ phase_info = {
     },
     'accel_to_dash': {
         'subsystem_options': {
-            'aerodynamics': {'method': 'computed'},
+            'aerodynamics': {'method': 'external'},
         },
         'user_options': {
             'num_segments': 2,
@@ -115,7 +115,7 @@ phase_info = {
     },
     'dash': {
         'subsystem_options': {
-            'aerodynamics': {'method': 'computed'},
+            'aerodynamics': {'method': 'external'},
         },
         'user_options': {
             'num_segments': 2,

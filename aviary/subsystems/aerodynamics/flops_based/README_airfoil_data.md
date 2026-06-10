@@ -23,6 +23,7 @@ surface-level assumptions visible and reusable.
 | `tc_ratio` | unitless | Thickness-to-chord ratio `(t/c)` |
 | `camber_ratio` | unitless | Maximum camber-to-chord ratio |
 | `max_thickness_location` | unitless | Chordwise maximum-thickness location `(x/c)_m` |
+| `leading_edge_radius_ratio` | unitless | Leading-edge radius ratio `r_LE/c` |
 | `re_ref` | unitless | Reference Reynolds number for the section data |
 
 Important convention:
@@ -68,15 +69,35 @@ Current NACA 4-digit entries use `max_thickness_location = 0.30`.
 
 ---
 
+## Leading-Edge Radius
+
+The Roskam Figure 4.7 leading-edge suction parameter uses a leading-edge
+Reynolds number:
+
+```text
+Re_LER = rho * U * r_LE / mu
+```
+
+For NACA 4-digit sections, the current catalog estimates:
+
+```text
+r_LE/c = 1.1019 * (t/c)^2
+```
+
+Use measured airfoil geometry when available, especially for non-NACA-4-digit
+sections.
+
+---
+
 ## Current Catalog
 
-| Airfoil | `cl_alpha` [/rad] | `CLmax_2D` | `CDmin` | `Cm_ac` | `t/c` | camber | `(x/c)_m` | `Re_ref` |
-|---------|-------------------|------------|---------|---------|-------|--------|-----------|----------|
-| NACA 0009 | 5.95 | 1.10 | 0.0055 | 0.000 | 0.09 | 0.00 | 0.30 | 1.0e6 |
-| NACA 0012 | 5.73 | 1.30 | 0.0070 | 0.000 | 0.12 | 0.00 | 0.30 | 2.0e6 |
-| NACA 2412 | 5.93 | 1.45 | 0.0062 | -0.047 | 0.12 | 0.02 | 0.30 | 2.0e6 |
-| NACA 4412 | 6.10 | 1.50 | 0.0060 | -0.099 | 0.12 | 0.04 | 0.30 | 2.0e6 |
-| NACA 4415 | 6.00 | 1.60 | 0.0076 | -0.100 | 0.15 | 0.04 | 0.30 | 2.0e6 |
+| Airfoil | `cl_alpha` [/rad] | `CLmax_2D` | `CDmin` | `Cm_ac` | `t/c` | camber | `(x/c)_m` | `r_LE/c` | `Re_ref` |
+|---------|-------------------|------------|---------|---------|-------|--------|-----------|----------|----------|
+| NACA 0009 | 5.95 | 1.10 | 0.0055 | 0.000 | 0.09 | 0.00 | 0.30 | 0.00893 | 1.0e6 |
+| NACA 0012 | 5.73 | 1.30 | 0.0070 | 0.000 | 0.12 | 0.00 | 0.30 | 0.01587 | 2.0e6 |
+| NACA 2412 | 5.93 | 1.45 | 0.0062 | -0.047 | 0.12 | 0.02 | 0.30 | 0.01587 | 2.0e6 |
+| NACA 4412 | 6.10 | 1.50 | 0.0060 | -0.099 | 0.12 | 0.04 | 0.30 | 0.01587 | 2.0e6 |
+| NACA 4415 | 6.00 | 1.60 | 0.0076 | -0.100 | 0.15 | 0.04 | 0.30 | 0.02479 | 2.0e6 |
 
 Representative Reynolds numbers for SpaJeti:
 
@@ -103,6 +124,7 @@ as OpenMDAO outputs at group scope:
 | `section_tc` | `tc_ratio` |
 | `section_camber` | `camber_ratio` |
 | `section_max_thickness_location` | `max_thickness_location` |
+| `section_leading_edge_radius_ratio` | `leading_edge_radius_ratio` |
 
 `section_cl_alpha` feeds `LiftCurveSlopePolhamus`.
 
@@ -133,6 +155,7 @@ of hardcoding `(x/c)_m = 0.4` or any other value.
 3. Record the Reynolds number and data source.
 4. Include `max_thickness_location`; use `0.40` for NACA 6-series style sections
    only when that is correct for the chosen airfoil.
-5. Update this README table.
-6. Update `SurfaceConfig` selection in `run_horizontal_small_uav.py` if the new
+5. Include `leading_edge_radius_ratio`; use measured geometry where possible.
+6. Update this README table.
+7. Update `SurfaceConfig` selection in `run_horizontal_small_uav.py` if the new
    airfoil should be used by the wing, VTP, HTP, canard, etc.

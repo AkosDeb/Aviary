@@ -5,12 +5,147 @@ import openmdao.api as om
 from openmdao.utils.assert_utils import assert_check_partials, assert_near_equal
 from openmdao.utils.testing_utils import use_tempdirs
 
-from aviary.subsystems.aerodynamics.flops_based.induced_drag import InducedDrag
+from aviary.subsystems.aerodynamics.aero_utils import (
+    leading_edge_radius_ratio_naca_4_digit,
+    leading_edge_reynolds_number_from_mach,
+    leading_edge_suction_parameter_roskam,
+    wing_induced_drag_roskam,
+)
+from aviary.subsystems.aerodynamics.flops_based.induced_drag import (
+    FuselageLiftInducedDragComp,
+    InducedDrag,
+    RoskamInducedDragComp,
+)
 from aviary.variable_info.variables import Aircraft, Dynamic
 
 
 @use_tempdirs
 class InducedDragTest(unittest.TestCase):
+    def test_roskam_induced_drag_uses_actual_cl_without_trim_factor(self):
+        prob = om.Problem()
+        prob.model.add_subsystem('drag', RoskamInducedDragComp(), promotes=['*'])
+        prob.setup()
+
+        cl = 0.5
+        cl_alpha_w = 5.5
+        ar_eff = 8.0
+        leading_edge_suction_parameter = 0.98
+        expected_cdi, expected_e = wing_induced_drag_roskam(
+            cl,
+            cl_alpha_w,
+            ar_eff,
+            leading_edge_suction_parameter=leading_edge_suction_parameter,
+        )
+
+        prob.set_val('CL', cl)
+        prob.set_val('CL_alpha_w', cl_alpha_w)
+        prob.set_val('AR_eff', ar_eff)
+        prob.run_model()
+
+        assert_near_equal(prob.get_val('CDi'), expected_cdi, 1e-12)
+        assert_near_equal(prob.get_val('e_oswald'), expected_e, 1e-12)
+        assert_near_equal(prob.get_val('leading_edge_suction_parameter'), 0.98, 1e-12)
+
+    def test_roskam_induced_drag_can_compute_live_le_suction_diagnostics(self):
+        prob = om.Problem()
+        prob.model.add_subsystem(
+            'drag',
+            RoskamInducedDragComp(compute_leading_edge_suction=True),
+            promotes=['*'],
+        )
+        prob.setup()
+
+        prob.set_val('CL', 0.5)
+        prob.set_val('CL_alpha_w', 5.5)
+        prob.set_val('AR_eff', 8.0)
+        prob.set_val('mach', 0.477)
+        prob.set_val('static_pressure', 54048.0, units='Pa')
+        prob.set_val('temperature', 255.65, units='K')
+        prob.set_val('mean_aerodynamic_chord', 0.2552083333333333, units='m')
+        prob.set_val('thickness_to_chord', 0.15)
+        prob.set_val('leading_edge_sweep', 3.97, units='deg')
+        prob.set_val('taper_ratio', 0.6)
+
+        with self.assertWarns(RuntimeWarning):
+            prob.run_model()
+
+        radius_15 = float(prob.get_val('leading_edge_radius', units='m')[0])
+        re_15 = float(prob.get_val('leading_edge_reynolds_number')[0])
+        r_suction = prob.get_val('leading_edge_suction_parameter')
+
+        expected_radius = (
+            leading_edge_radius_ratio_naca_4_digit(0.15) * 0.2552083333333333
+        )
+        assert_near_equal(radius_15, expected_radius, 1e-12)
+        assert_near_equal(re_15, 43763.49362902076, 1e-9)
+        with self.assertWarns(RuntimeWarning):
+            expected_r = leading_edge_suction_parameter_roskam(
+                re_15,
+                0.477,
+                np.deg2rad(3.97),
+                8.0,
+                0.6,
+            )
+        assert_near_equal(r_suction, expected_r, 1e-12)
+
+        prob.set_val('thickness_to_chord', 0.10)
+        with self.assertWarns(RuntimeWarning):
+            prob.run_model()
+
+        assert prob.get_val('leading_edge_radius', units='m') < radius_15
+        assert prob.get_val('leading_edge_reynolds_number') < re_15
+
+    def test_leading_edge_suction_helpers(self):
+        assert_near_equal(leading_edge_radius_ratio_naca_4_digit(0.12), 0.01586736, 1e-12)
+
+        re_ler = leading_edge_reynolds_number_from_mach(
+            mach=0.5,
+            static_pressure_Pa=101325.0,
+            temperature_K=288.15,
+            leading_edge_radius_m=0.004,
+        )
+        assert_near_equal(re_ler, 46594.835362663594, 1e-9)
+
+        with self.assertRaises(NotImplementedError):
+            leading_edge_suction_parameter_roskam(
+                leading_edge_reynolds_number=1.0e4,
+                mach=0.5,
+                leading_edge_sweep_rad=np.deg2rad(45.0),
+                aspect_ratio=8.0,
+                taper_ratio=0.5,
+            )
+
+        with self.assertWarns(RuntimeWarning):
+            r_inset = leading_edge_suction_parameter_roskam(
+                leading_edge_reynolds_number=1.0e5,
+                mach=0.5,
+                leading_edge_sweep_rad=0.0,
+                aspect_ratio=8.0,
+                taper_ratio=0.5,
+            )
+        assert_near_equal(r_inset, 0.958, 1e-12)
+
+    def test_fuselage_lift_induced_drag(self):
+        prob = om.Problem()
+        prob.model.add_subsystem('drag', FuselageLiftInducedDragComp(), promotes=['*'])
+        prob.setup()
+
+        prob.set_val('aircraft_alpha', 15.0, units='deg')
+        prob.set_val('fuselage_base_area', 0.0008343336047856176, units='m**2')
+        prob.set_val('fuselage_planform_area', 0.228, units='m**2')
+        prob.set_val('reference_area', 0.45, units='m**2')
+        prob.set_val('eta_finite_cylinder', 0.85)
+        prob.set_val('crossflow_drag_coefficient', 1.20)
+        prob.run_model()
+
+        alpha = np.deg2rad(15.0)
+        base_term = 2.0 * alpha**2 * 0.0008343336047856176 / 0.45
+        planform_term = 0.85 * 1.20 * alpha**3 * 0.228 / 0.45
+
+        assert_near_equal(prob.get_val('CDi_fus_base_area_term'), base_term, 1e-12)
+        assert_near_equal(prob.get_val('CDi_fus_planform_term'), planform_term, 1e-12)
+        assert_near_equal(prob.get_val('CDi_fus'), base_term + planform_term, 1e-12)
+
     def test_derivs(self):
         P = 2.60239151
         Sref = 1370.0

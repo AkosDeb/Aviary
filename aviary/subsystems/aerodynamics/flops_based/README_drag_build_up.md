@@ -294,6 +294,16 @@ surface that is actually in contact with the external flow.  For a lifting surfa
 Swet_exposed = (S_planform - S_inside_fuselage) * 2
 ```
 
+Reusable helper:
+
+```python
+exposed_wetted_area_lifting_surface(
+    planform_area,
+    buried_planform_area=0.0,
+    sides=2.0,
+)
+```
+
 where:
 
 | Symbol | Meaning |
@@ -324,6 +334,10 @@ continue with a clamped value.
 
 | Condition | Action |
 |-----------|--------|
+| `exposed_wetted_area_lifting_surface`: `planform_area <= 0` | `ValueError` |
+| `exposed_wetted_area_lifting_surface`: `buried_planform_area < 0` | `ValueError` |
+| `exposed_wetted_area_lifting_surface`: `buried_planform_area > planform_area` | `ValueError`; buried area cannot exceed the full planform |
+| `exposed_wetted_area_lifting_surface`: `sides <= 0` | `ValueError` |
 | Reynolds number <= 0 in `flat_plate_skin_friction_coeff` | `RuntimeWarning`; Cf clamped to near-zero-Re value |
 | `form_factor_lifting_surface`: t/c < 0 | `RuntimeWarning` |
 | `form_factor_lifting_surface`: t/c > 0.50 | `RuntimeWarning` (DATCOM calibrated for t/c <= 0.30) |

@@ -230,11 +230,12 @@ class LiftCurveSlopePolhamus(om.ExplicitComponent):
 
         if np.any(AR <= 0.0):
             raise ValueError(
-                f"LiftCurveSlopePolhamus: aspect_ratio must be > 0; got AR={float(AR)}."
+                "LiftCurveSlopePolhamus: aspect_ratio must be > 0; "
+                f"got min AR={float(np.min(AR)):.6g}."
             )
         if np.any(AR < 2.0):
             warnings.warn(
-                f"LiftCurveSlopePolhamus: aspect_ratio = {float(AR):.3f} < 2.0. "
+                f"LiftCurveSlopePolhamus: aspect_ratio min = {float(np.min(AR)):.3f} < 2.0. "
                 "The Polhamus/DATCOM formula is calibrated for AR >= 2; results at "
                 "lower AR may be unreliable.",
                 RuntimeWarning,
@@ -242,12 +243,13 @@ class LiftCurveSlopePolhamus(om.ExplicitComponent):
             )
         if np.any(M < 0.0):
             raise ValueError(
-                f"LiftCurveSlopePolhamus: Mach number must be >= 0; got M={float(M)}."
+                "LiftCurveSlopePolhamus: Mach number must be >= 0; "
+                f"got min M={float(np.min(M)):.6g}."
             )
         if np.any(M >= 1.0):
             raise ValueError(
                 f"LiftCurveSlopePolhamus: Mach number must be < 1 (subsonic only); "
-                f"got M={float(M)}. The Prandtl-Glauert factor beta=sqrt(1-M^2) is "
+                f"got max M={float(np.max(M)):.6g}. The Prandtl-Glauert factor beta=sqrt(1-M^2) is "
                 "undefined at M >= 1."
             )
 

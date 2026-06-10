@@ -59,6 +59,25 @@ _R_WF_TABLE = np.array([
     [ 0.858, 0.878, 0.884, 0.895, 0.910, 0.940, 0.972, 0.995, 1.090, 1.130, 1.130, 1.130],
 ])
 
+# Leading-edge suction parameter R, digitized approximately from Roskam Part VI,
+# Figure 4.7 supplied in the project notes. Only the high-x inset is currently
+# allowed by the helper; the main-chart values below x=1.3e5 are rough
+# placeholders and intentionally raise until properly checked. The main chart uses
+# x = Re_LER * cot(Lambda_LE) * sqrt(1 - M^2*cos(Lambda_LE)^2), with families
+# keyed by A*lambda/cos(Lambda_LE). Figure 4.7 is marked M < 0.8 only.
+_LE_SUCTION_PARAM_AXIS = np.array([0.0, 1.0, 2.0, 4.0, 10.0])
+_LE_SUCTION_X_AXIS = np.array([2.0e3, 3.0e3, 4.0e3, 6.0e3, 8.0e3, 1.0e4, 2.0e4, 4.0e4, 8.0e4, 1.3e5])
+_LE_SUCTION_TABLE = np.array([
+    [0.16, 0.28, 0.39, 0.50, 0.58, 0.64, 0.74, 0.82, 0.88, 0.90],
+    [0.16, 0.28, 0.39, 0.52, 0.61, 0.68, 0.78, 0.86, 0.91, 0.93],
+    [0.16, 0.28, 0.39, 0.54, 0.64, 0.72, 0.82, 0.89, 0.93, 0.95],
+    [0.16, 0.28, 0.39, 0.56, 0.67, 0.75, 0.85, 0.92, 0.95, 0.97],
+    [0.16, 0.28, 0.39, 0.58, 0.70, 0.78, 0.88, 0.95, 0.98, 0.99],
+])
+_LE_SUCTION_HIGH_X_LIMIT = 1.3e5
+_LE_SUCTION_INSET_PARAM_AXIS = np.array([0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0])
+_LE_SUCTION_INSET_R = np.array([0.86, 0.918, 0.938, 0.95, 0.958, 0.965, 0.970, 0.972])
+
 
 def _interp_table_2d(x, y, x_grid, y_grid, values, table_name=None):
     """Bilinearly interpolate a table with rows keyed by x and columns by y.
@@ -144,9 +163,100 @@ def reynolds_number_from_mach(
     return reynolds_number(rho, velocity, characteristic_length_m, mu)
 
 
+def leading_edge_radius_ratio_naca_4_digit(thickness_to_chord):
+    """Return NACA 4-digit leading-edge radius ratio ``r_LE/c``.
+
+    Abbott and von Doenhoff give the NACA 4-digit nose radius as:
+
+        r_LE / c = 1.1019 * (t/c)^2
+
+    Use measured airfoil data when available; this helper is a reasonable
+    fallback for the current NACA 4-digit catalog.
+    """
+    tc = np.asarray(thickness_to_chord, dtype=float)
+    if np.any(tc < 0.0):
+        raise ValueError(
+            f"leading_edge_radius_ratio_naca_4_digit: t/c must be >= 0; "
+            f"got min={float(np.min(tc)):.6g}."
+        )
+    return 1.1019 * tc**2
+
+
+def leading_edge_reynolds_number_from_mach(
+    mach,
+    static_pressure_Pa,
+    temperature_K,
+    leading_edge_radius_m,
+    gamma=GAMMA_AIR,
+    gas_constant=R_AIR_SI,
+):
+    """Return leading-edge Reynolds number ``Re_LER``.
+
+    Roskam Figure 4.7 uses:
+
+        Re_LER = rho * U * l_LER / mu
+
+    where ``l_LER`` is the airfoil leading-edge radius, not chord. If airfoil
+    data stores ``r_LE/c``, multiply by local chord before calling this helper.
+    """
+    radius = np.asarray(leading_edge_radius_m, dtype=float)
+    if np.any(radius <= 0.0):
+        raise ValueError(
+            f"leading_edge_reynolds_number_from_mach: leading_edge_radius_m "
+            f"must be > 0; got min={float(np.min(radius)):.6g}."
+        )
+    return reynolds_number_from_mach(
+        mach,
+        static_pressure_Pa,
+        temperature_K,
+        radius,
+        gamma=gamma,
+        gas_constant=gas_constant,
+    )
+
+
 def roughness_height(surface):
     """Return representative roughness height [m] for a named surface finish."""
     return ROUGHNESS_HEIGHTS_M[surface]
+
+
+def exposed_wetted_area_lifting_surface(planform_area, buried_planform_area=0.0, sides=2.0):
+    """Return exposed wetted area for an airfoil-based lifting surface.
+
+    The Roskam/DATCOM parasite-drag build-up uses the exposed wetted area, not
+    the full reference/planform area hidden inside the fuselage or another body:
+
+        S_wet_exposed = (S_planform - S_buried) * sides
+
+    For a normal wing or tail, ``sides = 2`` accounts for top and bottom.  For
+    paired panels, pass the total exposed planform area of all panels.
+    """
+    planform = np.asarray(planform_area, dtype=float)
+    buried = np.asarray(buried_planform_area, dtype=float)
+    sides_arr = np.asarray(sides, dtype=float)
+
+    if np.any(planform <= 0.0):
+        raise ValueError(
+            f"exposed_wetted_area_lifting_surface: planform_area must be > 0; "
+            f"got min={float(np.min(planform)):.6g}."
+        )
+    if np.any(buried < 0.0):
+        raise ValueError(
+            f"exposed_wetted_area_lifting_surface: buried_planform_area must be >= 0; "
+            f"got min={float(np.min(buried)):.6g}."
+        )
+    if np.any(buried > planform):
+        raise ValueError(
+            "exposed_wetted_area_lifting_surface: buried_planform_area cannot exceed "
+            "planform_area. Check fuselage intersection geometry."
+        )
+    if np.any(sides_arr <= 0.0):
+        raise ValueError(
+            f"exposed_wetted_area_lifting_surface: sides must be > 0; "
+            f"got min={float(np.min(sides_arr)):.6g}."
+        )
+
+    return (planform - buried) * sides_arr
 
 
 def roughness_cutoff_reynolds(characteristic_length_m, roughness_m, mach=0.0):
@@ -388,7 +498,7 @@ def form_factor_raymer_fuselage(fineness_ratio):
     Implemented for comparison/reference, but not used by the default fuselage
     path in ``RoskamParasiteDragBuildUp``.
 
-    Issues a ``RuntimeWarning`` when fineness ratio < 1. The term 5/f^1.5
+    Issues a ``RuntimeWarning`` when fineness ratio < 1.  The term 5/f^1.5
     diverges rapidly below f = 1.
     """
     f = np.asarray(fineness_ratio, dtype=float)
@@ -402,3 +512,199 @@ def form_factor_raymer_fuselage(fineness_ratio):
         )
     f_safe = np.maximum(f, 1.0e-6)
     return 0.9 + 5.0 / f_safe**1.5 + f_safe / 400.0
+
+
+# ---------------------------------------------------------------------------
+# Induced drag helpers (Roskam Part VI, Section 4.2.1.2)
+# ---------------------------------------------------------------------------
+
+
+def leading_edge_suction_parameter_roskam(
+    leading_edge_reynolds_number,
+    mach,
+    leading_edge_sweep_rad,
+    aspect_ratio,
+    taper_ratio,
+):
+    """Return Roskam Figure 4.7 leading-edge suction parameter ``R``.
+
+    Parameters
+    ----------
+    leading_edge_reynolds_number : float or array
+        ``Re_LER = rho * U * r_LE / mu``, where ``r_LE`` is leading-edge radius.
+    mach : float or array
+        Mach number. Figure 4.7 is marked valid for ``M < 0.8`` only.
+    leading_edge_sweep_rad : float or array
+        Leading-edge sweep angle [rad].
+    aspect_ratio : float or array
+        Wing aspect ratio ``A``. For the SpaJeti H-tail/endplate wing, pass the
+        effective aspect ratio ``AR_eff`` rather than the geometric AR.
+    taper_ratio : float or array
+        Wing taper ratio ``lambda``.
+
+    Notes
+    -----
+    First-pass linearized digitization from the supplied Figure 4.7 image.
+    Only the high-x inset branch is currently enabled:
+
+        x = Re_LER * cot(Lambda_LE) * sqrt(1 - M^2*cos(Lambda_LE)^2)
+        p = A * lambda / cos(Lambda_LE)
+
+    For ``x >= 1.3e5``, the inset curve ``R(p)`` is used and a warning is
+    issued because the digitization has not been independently checked against
+    a clean source. For ``x < 1.3e5``, this helper raises ``NotImplementedError``
+    instead of returning the rough placeholder main-chart table.
+    """
+    re_ler, mach_arr, sweep, ar, taper = np.broadcast_arrays(
+        np.asarray(leading_edge_reynolds_number, dtype=float),
+        np.asarray(mach, dtype=float),
+        np.asarray(leading_edge_sweep_rad, dtype=float),
+        np.asarray(aspect_ratio, dtype=float),
+        np.asarray(taper_ratio, dtype=float),
+    )
+
+    if np.any(re_ler <= 0.0):
+        raise ValueError(
+            f"leading_edge_suction_parameter_roskam: Re_LER must be > 0; "
+            f"got min={float(np.min(re_ler)):.6g}."
+        )
+    if np.any(mach_arr < 0.0):
+        raise ValueError(
+            f"leading_edge_suction_parameter_roskam: Mach must be >= 0; "
+            f"got min={float(np.min(mach_arr)):.6g}."
+        )
+    if np.any(mach_arr >= 0.8):
+        warnings.warn(
+            "leading_edge_suction_parameter_roskam: Figure 4.7 is marked valid "
+            "for M < 0.8 only. Values at M >= 0.8 are extrapolated by the same "
+            "digitized chart and should be treated with caution.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    if np.any(ar <= 0.0):
+        raise ValueError(
+            f"leading_edge_suction_parameter_roskam: aspect_ratio must be > 0; "
+            f"got min={float(np.min(ar)):.6g}."
+        )
+    if np.any(taper < 0.0):
+        raise ValueError(
+            f"leading_edge_suction_parameter_roskam: taper_ratio must be >= 0; "
+            f"got min={float(np.min(taper)):.6g}."
+        )
+
+    cos_le = np.cos(sweep)
+    if np.any(cos_le <= 0.0):
+        raise ValueError(
+            "leading_edge_suction_parameter_roskam: leading-edge sweep must have "
+            "cos(Lambda_LE) > 0."
+        )
+
+    tan_le = np.tan(sweep)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        cot_le = 1.0 / tan_le
+    compressibility_term = np.maximum(1.0 - mach_arr**2 * cos_le**2, 0.0)
+    x_param = re_ler * cot_le * np.sqrt(compressibility_term)
+    family_param = ar * taper / cos_le
+
+    # Unswept or very-low-sweep wings drive cot(Lambda_LE) -> infinity; Figure
+    # 4.7 then falls onto the high-x inset curve.
+    use_inset = (~np.isfinite(x_param)) | (x_param >= _LE_SUCTION_HIGH_X_LIMIT)
+    if np.any(~use_inset):
+        bad_x = x_param[~use_inset]
+        raise NotImplementedError(
+            "leading_edge_suction_parameter_roskam: Figure 4.7 main-chart "
+            f"interpolation is not implemented for x < {_LE_SUCTION_HIGH_X_LIMIT:.3g}. "
+            f"Got x value(s) {bad_x}. The rough table currently in aero_utils.py is "
+            "only a placeholder from the supplied image and has not been properly "
+            "checked against a clean digitization."
+        )
+
+    warnings.warn(
+        "leading_edge_suction_parameter_roskam: using first-pass digitized Roskam "
+        "Figure 4.7 high-x inset. This table is a placeholder from the supplied "
+        "image and has not been independently checked as a perfect digitization "
+        "of the original chart.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    inset_r = np.interp(
+        np.clip(family_param, _LE_SUCTION_INSET_PARAM_AXIS[0], _LE_SUCTION_INSET_PARAM_AXIS[-1]),
+        _LE_SUCTION_INSET_PARAM_AXIS,
+        _LE_SUCTION_INSET_R,
+    )
+    return inset_r
+
+
+def oswald_efficiency_roskam(cl_alpha_w, ar_eff, leading_edge_suction_parameter=0.98):
+    """Roskam Part VI Eq. 4.12: Oswald span efficiency factor.
+
+    e = 1.1 * (CL_alpha_w / AR_eff)
+        / (R * (CL_alpha_w / AR_eff)  +  (1 - R) * pi)
+
+    Parameters
+    ----------
+    cl_alpha_w : float or array
+        3-D wing lift-curve slope [1/rad].  Must come from Polhamus (or
+        equivalent) using AR_eff — not geometric AR.
+    ar_eff : float or array
+        Effective aspect ratio from the Scholz endplate correction.
+    leading_edge_suction_parameter : float
+        Roskam leading-edge suction parameter ``R`` from Part VI Figure 4.7.
+        Default 0.98 is a clean high-Re preliminary value.
+
+    Returns
+    -------
+    float or array
+        Oswald span efficiency e.  Values slightly above 1.0 are physically
+        valid for winglet configurations where the endplate loading distribution
+        beats a bare-elliptic span loading.
+    """
+    cl_alpha_w = np.asarray(cl_alpha_w, dtype=float)
+    ar_eff = np.asarray(ar_eff, dtype=float)
+    r_suction = np.asarray(leading_edge_suction_parameter, dtype=float)
+    ratio = cl_alpha_w / ar_eff
+    denom = r_suction * ratio + (1.0 - r_suction) * np.pi
+    return 1.1 * ratio / denom
+
+
+def wing_induced_drag_roskam(
+    cl,
+    cl_alpha_w,
+    ar_eff,
+    leading_edge_suction_parameter=0.98,
+):
+    """Roskam Part VI Eq. 4.8 wing induced drag coefficient (no-twist, first term only).
+
+    CDi = CL^2 / (pi * AR_eff * e)
+
+    where  e = oswald_efficiency_roskam(cl_alpha_w, ar_eff, leading_edge_suction_parameter)
+
+    The Roskam Eq. 4.11 trim factor (C_Lw = 1.05 * CL) is intentionally not applied
+    here — CL is used directly.
+
+    The twist correction terms from the full Eq. 4.8 are excluded:
+        + 2*pi * CL * eps_t * V    (twist-CL cross term)
+        + 4*pi^2 * eps_t^2 * w    (pure twist term)
+    These are zero for an untwisted wing.  Implement when geometric twist is added;
+    V and w are integrals over the spanwise lift distribution (Roskam Part VI App. B).
+
+    Parameters
+    ----------
+    cl : float or array
+        Aircraft total lift coefficient.
+    cl_alpha_w : float or array
+        3-D wing lift-curve slope [1/rad] (must use AR_eff).
+    ar_eff : float or array
+        Effective aspect ratio from Scholz endplate correction.
+    leading_edge_suction_parameter : float
+        Roskam leading-edge suction parameter ``R``. Default 0.98.
+
+    Returns
+    -------
+    CDi : float or array
+    e_oswald : float or array
+    """
+    cl_arr = np.asarray(cl, dtype=float)
+    e = oswald_efficiency_roskam(cl_alpha_w, ar_eff, leading_edge_suction_parameter)
+    cdi = cl_arr**2 / (np.pi * ar_eff * e)
+    return cdi, e

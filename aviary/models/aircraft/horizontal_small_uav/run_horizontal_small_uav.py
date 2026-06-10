@@ -27,6 +27,9 @@ from aviary.subsystems.propulsion.small_turbojet import (
 )
 from aviary.subsystems.geometry.flops_based.htail_geometry import HTailGeometry
 from aviary.subsystems.geometry.flops_based.cg_estimator import CGEstimatorGroup
+from aviary.subsystems.geometry.flops_based.superellipse_fuselage import (
+    SuperellipseFuselageGeometry,
+)
 from aviary.subsystems.aerodynamics.flops_based.airfoil_data import NACA_0012, NACA_4415
 from aviary.subsystems.aerodynamics.flops_based.surface_config import SurfaceConfig
 from aviary.subsystems.aerodynamics.flops_based.lifting_surface import WingSurface, VTPSurface
@@ -34,6 +37,11 @@ from aviary.subsystems.aerodynamics.flops_based.lateral_load_factor import (
     LateralLoadFactor,
     LongitudinalLoadFactor,
 )
+from aviary.subsystems.aerodynamics.flops_based.induced_drag import (
+    FuselageLiftInducedDragComp,
+    RoskamInducedDragComp,
+)
+from aviary.subsystems.aerodynamics.roskam_aero_builder import RoskamAeroBuilder
 
 
 AIRCRAFT_DATA = Path(__file__).with_name('horizontal_small_uav.csv')
@@ -46,7 +54,7 @@ ENGINE_MASS_LIMIT_KG = 5.0
 #   patch (x.y.Z) -- bug fix, doc tweak, parameter change
 #   minor (x.Y.0) -- new physics component or constraint
 #   major (X.0.0) -- architectural redesign (new DV set, new EOM, new mission)
-MODEL_VERSION = '1.7.3'
+MODEL_VERSION = '1.14.0'
 
 OUTPUT_ROOT = REPO_ROOT / 'outputs'
 PROBLEM_NAME = 'run_horizontal_small_uav'
@@ -64,6 +72,17 @@ CONSTRAINT_Q_PA = 8_581.0
 # ── Fuselage equivalent diameter for K_wf (rounded-square, 15 cm side) ────────
 # d_eq = 0.15 * sqrt(4/pi) ~ 0.169 m
 FUSELAGE_EQUIV_DIAMETER_M = 0.169
+
+# ── Parametric fuselage geometry defaults ────────────────────────────────────
+FUSELAGE_NOSE_LENGTH_FRACTION = 0.20
+FUSELAGE_TAIL_LENGTH_FRACTION = 0.35
+FUSELAGE_BASE_WIDTH_FRACTION  = 0.20
+FUSELAGE_BASE_HEIGHT_FRACTION = 0.20
+FUSELAGE_SUPERELLIPSE_EXPONENT = 4.0
+
+# ── Fuselage lift-induced drag placeholders (Roskam Part VI Fig. interpolation pending)
+FUSELAGE_ETA_FINITE_CYLINDER = 0.85
+FUSELAGE_CROSSFLOW_DRAG_COEFFICIENT = 1.20
 
 # ── Fixed rudder parameters ───────────────────────────────────────────────────
 RUDDER_CF_C       = 0.25   # rudder chord / VTP chord
@@ -279,6 +298,7 @@ def print_aero_detail(prob):
     wing_x_mac_le   = safe_get(prob, 'wing_x_mac_le',    'm')
     wing_z_mac_le   = safe_get(prob, 'wing_z_mac_le',    'm')
     wing_x_mac_c4   = safe_get(prob, 'wing_x_mac_c4',   'm')
+    wing_le_sweep   = safe_get(prob, 'wing_le_sweep',   'deg')
 
     vtp_span      = safe_get(prob, av.Aircraft.VerticalTail.SPAN,             'm')
     vtp_area      = safe_get(prob, av.Aircraft.VerticalTail.AREA,             'm**2')
@@ -578,8 +598,19 @@ def add_load_factor_subsystems(prob):
     fixed.add_output('rudder_cf_c',      val=RUDDER_CF_C,         units='unitless')
     fixed.add_output('rudder_eta_root',  val=RUDDER_ETA_ROOT,     units='unitless')
     fixed.add_output('rudder_eta_tip',   val=RUDDER_ETA_TIP,      units='unitless')
+    fixed.add_output('fus_nose_frac',    val=FUSELAGE_NOSE_LENGTH_FRACTION, units='unitless')
+    fixed.add_output('fus_tail_frac',    val=FUSELAGE_TAIL_LENGTH_FRACTION, units='unitless')
+    fixed.add_output('fus_base_width_frac',  val=FUSELAGE_BASE_WIDTH_FRACTION,  units='unitless')
+    fixed.add_output('fus_base_height_frac', val=FUSELAGE_BASE_HEIGHT_FRACTION, units='unitless')
+    fixed.add_output('fus_superellipse_exp', val=FUSELAGE_SUPERELLIPSE_EXPONENT, units='unitless')
+    fixed.add_output('fus_eta_finite_cylinder', val=FUSELAGE_ETA_FINITE_CYLINDER, units='unitless')
+    fixed.add_output('fus_crossflow_cd', val=FUSELAGE_CROSSFLOW_DRAG_COEFFICIENT, units='unitless')
     fixed.add_output('design_mach',      val=CONSTRAINT_MACH,     units='unitless',
                      desc='Mach at the constraint flight condition -- shared by all surface Polhamus instances')
+    fixed.add_output('constraint_static_pressure', val=CRUISE_STATIC_PRESSURE_PA, units='Pa',
+                     desc='Static pressure at the constraint flight condition')
+    fixed.add_output('constraint_temperature',     val=CRUISE_TEMPERATURE_K,      units='K',
+                     desc='Static temperature at the constraint flight condition')
     fixed.add_output('alpha_max_deg',    val=ALPHA_MAX_DEG,       units='deg',
                      desc='Max operating alpha [deg] -- shared by Nz (LongitudinalLoadFactor) and M_DD (MachCriticalComp)')
     fixed.add_output('mach_upper_bound', val=MACH_UPPER_BOUND,    units='unitless',
@@ -596,6 +627,32 @@ def add_load_factor_subsystems(prob):
 
     # ── H-tail VTP geometry: span/chord -> area, AR, fuselage_vtp_span_ratio ──
     model.add_subsystem('htail_geom', HTailGeometry(), promotes=['*'])
+
+    # ── Parametric fuselage geometry: report-only until drag/CG integration ──
+    model.add_subsystem(
+        'superellipse_fuselage',
+        SuperellipseFuselageGeometry(),
+        promotes_inputs=[
+            ('fuselage_length', av.Aircraft.Fuselage.LENGTH),
+            ('max_width', av.Aircraft.Fuselage.MAX_WIDTH),
+            ('max_height', av.Aircraft.Fuselage.MAX_HEIGHT),
+            ('nose_length_fraction', 'fus_nose_frac'),
+            ('tail_length_fraction', 'fus_tail_frac'),
+            ('base_width_fraction', 'fus_base_width_frac'),
+            ('base_height_fraction', 'fus_base_height_frac'),
+            ('superellipse_exponent', 'fus_superellipse_exp'),
+        ],
+        promotes_outputs=[
+            'fuselage_planform_area',
+            'fuselage_base_area',
+            'fuselage_wetted_area',
+            'fuselage_equivalent_diameter',
+            'fuselage_fineness_ratio',
+            'fuselage_max_cross_section_area',
+            'fuselage_volume',
+            'fuselage_centroid_x',
+        ],
+    )
 
     # ── Wing surface: Scholz AR correction + Polhamus + K_wf ─────────────────
     model.add_subsystem(
@@ -629,6 +686,7 @@ def add_load_factor_subsystems(prob):
             'wing_x_mac_le',
             'wing_z_mac_le',
             'wing_x_mac_c4',
+            'wing_le_sweep',
         ],
     )
 
@@ -671,6 +729,79 @@ def add_load_factor_subsystems(prob):
             'alpha_max_deg',
         ],
         promotes_outputs=['CL', 'lift', 'Nz'],
+    )
+
+    # ── Wing induced drag -- Roskam Part VI Eq. 4.8 (no twist) ───────────────
+    # CDi = CL^2 / (pi * AR_eff * e), with no hidden 1.05 trim multiplier.
+    # e comes from Roskam Eq. 4.12 using the leading-edge suction parameter.
+    # AR_eff must be used here -- NOT the geometric AR.
+    model.add_subsystem(
+        'roskam_cdi',
+        RoskamInducedDragComp(compute_leading_edge_suction=True),
+        promotes_inputs=[
+            'CL',
+            ('AR_eff',     'AR_eff'),
+            ('CL_alpha_w', 'wing_CL_alpha'),
+            ('mach', 'design_mach'),
+            ('static_pressure', 'constraint_static_pressure'),
+            ('temperature', 'constraint_temperature'),
+            ('mean_aerodynamic_chord', 'wing_c_mac'),
+            ('thickness_to_chord', 'wing_section_tc'),
+            ('leading_edge_sweep', 'wing_le_sweep'),
+            ('taper_ratio', av.Aircraft.Wing.TAPER_RATIO),
+        ],
+        promotes_outputs=[
+            'CDi',
+            'e_oswald',
+            ('leading_edge_radius', 'wing_le_radius'),
+            ('leading_edge_reynolds_number', 'wing_Re_LER'),
+            ('leading_edge_suction_parameter', 'wing_le_suction_parameter'),
+        ],
+    )
+
+    # ── Fuselage drag due to lift -- Roskam Part VI Eq. 4.33, report-only ────
+    model.add_subsystem(
+        'fuselage_cdi',
+        FuselageLiftInducedDragComp(),
+        promotes_inputs=[
+            ('aircraft_alpha', 'alpha_max_deg'),
+            'fuselage_base_area',
+            'fuselage_planform_area',
+            ('reference_area', av.Aircraft.Wing.AREA),
+            ('eta_finite_cylinder', 'fus_eta_finite_cylinder'),
+            ('crossflow_drag_coefficient', 'fus_crossflow_cd'),
+        ],
+        promotes_outputs=[
+            'CDi_fus',
+            'CDi_fus_base_area_term',
+            'CDi_fus_planform_term',
+        ],
+    )
+
+    # ── Wire Roskam CDi into FLOPS mission polar via span efficiency factor ────
+    # FLOPS InducedDrag formula: CDi = CL^2 / (pi * AR_geo * e_span_eff)
+    # With e_span_eff = e_oswald * (AR_eff / AR_geo):
+    #   CDi_flops = CL^2 / (pi * AR_eff * e_oswald)  =  Roskam Eq. 4.8  ✓
+    # e_oswald comes from RoskamInducedDragComp (Eq. 4.12); AR_eff from Scholz correction.
+    # aircraft:wing:span_efficiency_factor is NOT a pre-mission computed output --
+    # it is safe to promote our output to this name without a connection conflict.
+    model.add_subsystem(
+        'span_eff_correction',
+        om.ExecComp(
+            'e_span_eff = e_oswald * AR_eff / AR_geo',
+            e_oswald={'val': 0.85, 'units': 'unitless'},
+            AR_eff={'val': 8.0, 'units': 'unitless'},
+            AR_geo={'val': 7.0, 'units': 'unitless'},
+            e_span_eff={'val': 0.97, 'units': 'unitless'},
+        ),
+        promotes_inputs=[
+            'e_oswald',
+            'AR_eff',
+            ('AR_geo', av.Aircraft.Wing.ASPECT_RATIO),
+        ],
+        promotes_outputs=[
+            ('e_span_eff', av.Aircraft.Wing.SPAN_EFFICIENCY_FACTOR),
+        ],
     )
 
 
@@ -1001,11 +1132,12 @@ def print_parasite_drag_detail(prob):
     vtp_tc          = safe_get(prob, av.Aircraft.VerticalTail.THICKNESS_TO_CHORD)
 
     fus_length      = safe_get(prob, av.Aircraft.Fuselage.LENGTH,              'm')
-    fus_wetted      = safe_get(prob, av.Aircraft.Fuselage.WETTED_AREA,         'm**2')
+    fus_wetted      = safe_get(prob, 'fuselage_wetted_area',                   'm**2')
+    fus_equiv_diam  = safe_get(prob, 'fuselage_equivalent_diameter',           'm')
 
     if any(isinstance(v, str) for v in (
         wing_area, wing_c_mac, wing_root_chord, wing_sweep, wing_tc,
-        vtp_area, vtp_avg_chord, vtp_sweep, vtp_tc, fus_length, fus_wetted,
+        vtp_area, vtp_avg_chord, vtp_sweep, vtp_tc, fus_length, fus_wetted, fus_equiv_diam,
     )):
         print('  (one or more geometry values not available -- skipping)')
         return
@@ -1042,7 +1174,7 @@ def print_parasite_drag_detail(prob):
     ff_vtp  = form_factor_lifting_surface(
         vtp_tc,  max_thickness_location_over_chord=VTP_AIRFOIL.max_thickness_location,
     )
-    fus_fineness = fus_length / FUSELAGE_EQUIV_DIAMETER_M
+    fus_fineness = fus_length / fus_equiv_diam
     ff_fus  = form_factor_datcom_body(fus_fineness)
 
     # ── R_LS: use quarter-chord sweep as proxy for max-thickness-line sweep ───
@@ -1095,8 +1227,9 @@ def print_parasite_drag_detail(prob):
     print(f'    VTP×2 Swet = 4 × Aircraft.VerticalTail.AREA  '
           f'(2 panels × 2 sides, no cutout -- conservative)')
     print(f'    Wing buried panel at root ≈ {s_buried:.5f} m²  '
-          f'(d_fus/2 × c_root)')
-    print(f'    Fuselage fineness l/d = {fus_fineness:.1f}')
+          f'(d_fus/2 × c_root)  [d_fus = {FUSELAGE_EQUIV_DIAMETER_M:.4f} m hardcoded for K_wf]')
+    print(f'    Fuselage Swet / d_eq / fineness from SuperellipseFuselageGeometry (live)')
+    print(f'    Fuselage d_eq = {fus_equiv_diam:.4f} m,  fineness l/d = {fus_fineness:.1f}')
 
 
 def build_xdsm_problem():
@@ -1146,6 +1279,11 @@ def main():
     print_result('VTP Aspect Ratio',  safe_get(prob, av.Aircraft.VerticalTail.ASPECT_RATIO))
     print_result('H-Tail Area',       safe_get(prob, av.Aircraft.HorizontalTail.AREA, 'm**2'), 'm^2')
     print_result('Fuselage Length',   safe_get(prob, av.Aircraft.Fuselage.LENGTH, 'm'), 'm')
+    print_result('Fuselage S_plf',    safe_get(prob, 'fuselage_planform_area', 'm**2'), 'm^2')
+    print_result('Fuselage S_b',      safe_get(prob, 'fuselage_base_area', 'm**2'), 'm^2')
+    print_result('Fuselage Swet geom', safe_get(prob, 'fuselage_wetted_area', 'm**2'), 'm^2')
+    print_result('Fuselage d_eq geom', safe_get(prob, 'fuselage_equivalent_diameter', 'm'), 'm')
+    print_result('Fuselage fineness geom', safe_get(prob, 'fuselage_fineness_ratio'), '')
 
     print('\nLoad Factors (550 km/h, 5 km ISA):')
     print('-' * 70)
@@ -1157,6 +1295,7 @@ def main():
     print_result('Wing MAC LE x-station',         safe_get(prob, 'wing_x_mac_le',    'm'), 'm')
     print_result('Wing MAC LE z-station',         safe_get(prob, 'wing_z_mac_le',    'm'), 'm')
     print_result('Wing MAC c/4 x-station',        safe_get(prob, 'wing_x_mac_c4',   'm'), 'm')
+    print_result('Wing LE sweep',                 safe_get(prob, 'wing_le_sweep',  'deg'), 'deg')
 
     print('\nLoad Factors (550 km/h, 5 km ISA):')
     print('-' * 70)
@@ -1166,6 +1305,17 @@ def main():
     print_result('CY_delta_r',      safe_get(prob, 'CY_delta_r'), '/rad')
     print_result('Ny (lateral)',     safe_get(prob, 'Ny'), f'[min {NY_MIN}]')
     print_result('Nz (vertical)',    safe_get(prob, 'Nz'), f'[min {NZ_MIN}]')
+    print_result('CL (at Nz point)', safe_get(prob, 'CL'), '')
+    print_result('CDi (Roskam Eq 4.8, no twist)', safe_get(prob, 'CDi'), '')
+    print_result('  e_span_eff (wired to FLOPS)',
+                 safe_get(prob, av.Aircraft.Wing.SPAN_EFFICIENCY_FACTOR), '[AR_eff-corrected]')
+    print_result('CDi_fus (Roskam Eq 4.33)',       safe_get(prob, 'CDi_fus'), '[report-only]')
+    print_result('  CDi_fus base-area term',       safe_get(prob, 'CDi_fus_base_area_term'), '')
+    print_result('  CDi_fus planform term',        safe_get(prob, 'CDi_fus_planform_term'), '')
+    print_result('e_oswald (Roskam Eq 4.12)',      safe_get(prob, 'e_oswald'), '')
+    print_result('Wing r_LE',                      safe_get(prob, 'wing_le_radius', 'm'), 'm')
+    print_scientific_result('Wing Re_LER',         safe_get(prob, 'wing_Re_LER'), '')
+    print_result('LE suction parameter R',         safe_get(prob, 'wing_le_suction_parameter'), '')
     print_result('Wing M_DD (Weisshaar)', safe_get(prob, 'M_DD'), '[informational]')
     print_result('Wing M_crit',           safe_get(prob, 'M_crit'), '')
     print_result('M_crit check Mach',     MACH_UPPER_BOUND,

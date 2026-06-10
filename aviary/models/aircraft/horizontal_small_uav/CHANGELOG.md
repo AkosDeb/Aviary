@@ -1,5 +1,234 @@
 # SpaJeti v1.0.0 H-wing - Model Changelog
 
+## v1.13.0 - 2026-06-10
+
+**CDi wired into FLOPS mission polar via span efficiency correction**
+
+- Added `span_eff_correction` ExecComp in `add_load_factor_subsystems`:
+
+      e_span_eff = e_oswald * AR_eff / AR_geo
+      → promotes output as `aircraft:wing:span_efficiency_factor`
+
+  This makes the FLOPS `InducedDrag` compute:
+      CDi_flops = CL^2 / (pi * AR_geo * e_span_eff)
+                = CL^2 / (pi * AR_eff * e_oswald)  =  Roskam Eq. 4.8 ✓
+
+  The FLOPS polar CDi now uses the Scholz AR_eff endplate correction and the
+  Roskam Eq. 4.12 span efficiency, instead of the CSV fixed value (e = 0.90,
+  AR = geometric AR). The optimizer sees gradients of range w.r.t. VTP span
+  (via AR_eff) and wing geometry (via CL_alpha_w → e_oswald) through the CDi path.
+
+- Added `e_span_eff (wired to FLOPS)` diagnostic to the optimization results print.
+- Confirmed that `aircraft:wing:span_efficiency_factor` is NOT a pre-mission
+  computed output in Aviary (verified by listing all model outputs after
+  `prob.add_pre_mission_systems(); prob.setup()`), so the ExecComp promotion is
+  conflict-free.
+- CD0 mission-polar wiring is BLOCKED by Aviary pre-mission ownership of
+  `aircraft:fuselage:wetted_area` and `aircraft:vertical_tail:wetted_area`.
+  Three paths are documented in TOOD.md (scaler, factor ratio, TabularAeroGroup).
+
+Versioning note:
+- This is a `MINOR` bump because it wires a new physics path into the mission
+  polar (CDi responds to optimizer design variables for the first time).
+
+---
+
+## v1.12.0 - 2026-06-10
+
+**Report-only fuselage drag due to lift**
+
+- Added `FuselageLiftInducedDragComp` implementing Roskam Part VI Eq. 4.33:
+  `CDi_fus = 2*alpha^2*S_b_fus/S + eta*c_d_c*alpha^3*S_plf_fus/S`.
+- Wired `SuperellipseFuselageGeometry` into the SpaJeti model as a report-only
+  geometry source using `Aircraft.Fuselage.LENGTH`, `MAX_WIDTH`, and `MAX_HEIGHT`.
+- Wired `fuselage_base_area` and `fuselage_planform_area` into `CDi_fus`.
+- Uses the same design-point aircraft alpha path as the wing load-factor/Mach
+  checks: `alpha_max_deg`.
+- `eta` and `c_d_c` are scalar placeholders until the Roskam charts are digitized
+  and verified.
+- Base drag remains excluded and is tracked as a separate TODO.
+
+Versioning note:
+- This is a `MINOR` bump because it adds a new aerodynamic component and
+  report-only model wiring.
+
+---
+
+## v1.11.0 - 2026-06-10
+
+**Parametric superellipse fuselage geometry**
+
+- Added `SuperellipseFuselageGeometry` as a standalone OpenMDAO component.
+- The component models the fuselage as smooth superellipse cross-sections with
+  configurable nose, mid-body, and aft taper regions.
+- Outputs include `fuselage_planform_area` (`S_plf_fus` candidate),
+  `fuselage_base_area` (`S_b_fus` candidate), wetted area, equivalent diameter,
+  fineness ratio, maximum cross-section area, volume, and geometric centroid.
+- Added tests and documentation. The component is not yet wired into parasite
+  drag, fuselage drag-due-to-lift, CG, or stability.
+
+Versioning note:
+- This is a `MINOR` bump because it adds a new geometry component that will feed
+  multiple aerodynamic build-up terms.
+
+---
+
+## v1.10.0 - 2026-06-10
+
+**Live leading-edge suction parameter wiring**
+
+- `MACGeometryComp` now outputs the wing leading-edge sweep as `wing_le_sweep`.
+- `RoskamInducedDragComp(compute_leading_edge_suction=True)` computes:
+  `r_LE/c = 1.1019*(t/c)^2`, `r_LE = (r_LE/c)*MAC`, `Re_LER`, and the Roskam
+  Figure 4.7 leading-edge suction parameter used in Eq. 4.12.
+- The SpaJeti model now wires `wing_section_tc`, `wing_c_mac`, `wing_le_sweep`,
+  `AR_eff`, taper, Mach, static pressure, and temperature into the local CDi
+  component.
+- Added diagnostics: `wing_le_radius`, `wing_Re_LER`, and
+  `wing_le_suction_parameter`.
+- Made the Polhamus AR/Mach guard messages array-safe so low-AR warnings do not
+  crash model execution.
+
+Versioning note:
+- This is a `MINOR` bump because it adds a live physics path and new model
+  diagnostics for the induced-drag calculation.
+
+---
+
+## v1.9.1 - 2026-06-10
+
+**Conservative Figure 4.7 guardrails**
+
+- `leading_edge_suction_parameter_roskam()` now raises `NotImplementedError`
+  for Figure 4.7 main-chart cases with `x < 1.3e5`; those placeholder values are
+  not allowed until a clean chart digitization is checked.
+- The high-`x` inset branch still returns a value, but emits a `RuntimeWarning`
+  stating that the inset digitization is first-pass placeholder data from the
+  supplied image.
+- Clarified that the H-tail/endplate wing should pass `AR_eff`, not geometric AR,
+  into Roskam induced drag and the Figure 4.7 helper.
+
+Versioning note:
+- This is a `PATCH` bump because it tightens validation/documentation for the
+  new v1.9.0 helper without adding a new subsystem.
+
+---
+
+## v1.9.0 - 2026-06-10
+
+**Roskam Figure 4.7 leading-edge suction parameter**
+
+- Renamed the local Roskam induced-drag `r_fourier` concept to
+  `leading_edge_suction_parameter` in code, tests, and docs.
+- Added first-pass Roskam Figure 4.7 interpolation helper:
+  `leading_edge_suction_parameter_roskam(Re_LER, M, Lambda_LE, AR, taper)`.
+  The table is a linearized digitization from the supplied chart image and uses
+  the inset curve for the high-`x` region.
+- Added leading-edge Reynolds helper:
+  `leading_edge_reynolds_number_from_mach(...)`, using
+  `Re_LER = rho * U * r_LE / mu`.
+- Added `leading_edge_radius_ratio_naca_4_digit(t/c)` for the standard
+  `r_LE/c = 1.1019*(t/c)^2` NACA 4-digit estimate.
+- Extended `AirfoilData` with `leading_edge_radius_ratio` and exposed it as
+  `section_leading_edge_radius_ratio` through `AirfoilConstantsComp`.
+- Updated induced-drag and airfoil documentation, plus TODO notes for the
+  remaining wiring step from live airfoil/chord/sweep data into `CDi`.
+
+Versioning note:
+- This is a `MINOR` bump because it adds new reusable aerodynamic physics
+  helpers and airfoil data needed by the induced-drag model.
+
+---
+
+## v1.8.2 - 2026-06-09
+
+**Drag TODO refinements**
+
+- Added TODO items to double-check wing exposed wetted area before polar wiring:
+  `S_wet_wing = 2 * (S_ref - S_buried_in_fuselage)`.
+- Added TODO items to better define fuselage geometry for drag: length,
+  equivalent diameter, cross-section/wetted-area model, wing carry-through area,
+  and base/exhaust treatment.
+- Added TODO item for fuselage/body induced drag.
+- Added TODO item to digitize and implement the Roskam Figure 4.7 leading-edge
+  suction parameter as a reusable interpolation helper before expanding the
+  induced-drag model beyond the current no-twist first term.
+- Corrected the TODO note for `CDi` to match v1.8.1: no hidden `1.05 * CL`
+  trim multiplier.
+
+Versioning note:
+- This is a `PATCH` bump because it updates planning/documentation only.
+
+---
+
+## v1.8.1 - 2026-06-09
+
+**Exposed wetted-area helper, guardrail docs, and no-trim CDi**
+
+- Added `exposed_wetted_area_lifting_surface()` in `aero_utils.py`:
+
+      S_wet_exposed = (S_planform - S_inside_fuselage) * sides
+
+  with hard validation for nonpositive planform area, negative buried area,
+  buried area larger than planform area, and nonpositive side count.
+- Documented that lifting-surface `wetted_area` must be exposed wetted area:
+  subtract the area buried inside the fuselage/body, then multiply by two for
+  upper and lower surfaces.
+- Removed the `1.05 * CL` trim multiplier from the local `RoskamInducedDragComp`;
+  `CDi` now uses the actual input `CL` directly. Trim increments should be added
+  later from an explicit trim/tail-load analysis, not as a hidden default.
+- Updated `README_induced_drag.md` to document the no-trim convention.
+- Expanded drag safety-guard documentation for exposed wetted area, Reynolds
+  number, form-factor limits, `R_LS`, `R_wf`, and component-level invalid inputs.
+
+Verification:
+- `python -m pytest aviary\subsystems\aerodynamics\flops_based\test\test_parasite_drag.py aviary\subsystems\aerodynamics\flops_based\test\test_induced_drag.py -q`
+  passes.
+- `python -m py_compile aviary\subsystems\aerodynamics\aero_utils.py aviary\subsystems\aerodynamics\flops_based\parasite_drag.py aviary\subsystems\aerodynamics\flops_based\induced_drag.py aviary\models\aircraft\horizontal_small_uav\run_horizontal_small_uav.py`
+  passes.
+
+Versioning note:
+- This is a `PATCH` bump because it corrects/refines formulas, validation, and
+  documentation in the existing v1.8 drag implementation.
+
+---
+
+## v1.8.0 - 2026-06-09
+
+**Roskam wing induced drag component (Eq. 4.8, no twist)**
+
+- New helpers in `aero_utils.py`:
+  - `oswald_efficiency_roskam(cl_alpha_w, ar_eff, r_fourier)` — Roskam Part VI Eq. 4.12
+  - `wing_induced_drag_roskam(cl, cl_alpha_w, ar_eff, ...)` — Eq. 4.8 first term
+- New `RoskamInducedDragComp` in `induced_drag.py`:
+
+      CDi = C_Lw^2 / (pi * AR_eff * e)   with  C_Lw = 1.05 * CL (Eq. 4.11)
+      e   from Roskam Eq. 4.12 using AR_eff and wing_CL_alpha
+
+  Options: `cl_trim_factor = 1.05` (Eq. 4.11), `r_fourier = 0.98` (SpaJeti default).
+- AR convention enforced: **AR_eff must be used for ALL aerodynamic calculations**
+  (lift, drag, pitch, stability derivatives).  Geometric AR must not appear in
+  any new aero formula.  `RoskamInducedDragComp` uses AR_eff throughout.
+- Twist terms from Eq. 4.8 excluded (untwisted wing, ε_t = 0); documented in
+  `README_induced_drag.md` for future implementation when twist is introduced.
+- `RoskamInducedDragComp` wired into `add_load_factor_subsystems` after `long_load`;
+  promotes `CDi` and `e_oswald` to model scope.
+- `CDi` and `e_oswald` added to the optimization results print block.
+- New `README_induced_drag.md`: formula derivation, I/O table, excluded twist terms,
+  AR convention note, and UAV numerical example (~26 % CDi reduction from endplate).
+
+Not yet wired into the FLOPS mission drag polar (fuel burn unchanged).
+
+Verification:
+- `python -m pytest aviary\subsystems\aerodynamics\flops_based\test\test_parasite_drag.py -q`
+  passes with 5 tests (unchanged).
+- `final_setup()` runs cleanly; `CDi` and `e_oswald` appear at model scope.
+
+Versioning note:
+- This is a `MINOR` bump (new physics component).
+
+---
+
 ## v1.7.3 - 2026-06-09
 
 **DATCOM/Roskam lifting-surface CD0 correction factors**

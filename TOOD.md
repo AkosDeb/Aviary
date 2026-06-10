@@ -231,11 +231,39 @@ Steps:
 
 2. **DONE** — Fuselage drag is included in step 1 above.
 
-3. **[TODO] Wire into mission polar** — connect `RoskamParasiteDragBuildUp` to the
-   FLOPS `zero_lift_drag_coeff` in `run_horizontal_small_uav.py`.
-   Requires live geometry inputs (wing/VTP/HTP/fuselage Swet, MAC, fineness ratios,
-   fuselage length) and a decision on whether to replace or supplement the FLOPS
-   built-in skin-friction path.
+3. **[BLOCKED] Wire Roskam CD0 into mission polar** — Aviary's pre-mission geometry
+   group (v1.13.0 investigation) COMPUTES and OWNS these outputs:
+   - `aircraft:fuselage:wetted_area` (from `pre_mission.core_subsystems.geometry.wetted_area.fus_swet`)
+   - `aircraft:vertical_tail:wetted_area` (from `...wetted_area.tail`)
+
+   Since these are pre-mission OUTPUTS, we cannot promote our own component outputs
+   to the same names without a connection conflict.
+
+   **Viable paths forward:**
+
+   a. **Wetted-area scalers** — `aircraft:vertical_tail:wetted_area_scaler` is already
+      in the CSV at 1.0. Setting it to 2.0 would double the single-panel VTP wetted
+      area to account for the two H-tail panels, IF the FLOPS formula gives per-panel
+      area. Need to verify what `prelim_swet` computes for `num_tails = 1`.
+
+   b. **`ZERO_LIFT_DRAG_COEFF_FACTOR` ratio** — run the model once to read the FLOPS
+      `CD0` output from the mission phase, then compute
+      `factor = CD0_roskam / CD0_flops` and wire `factor` as `aircraft:design:zero_lift_drag_coeff_factor`.
+      This replaces the FLOPS CD0 with ours but requires knowing the FLOPS value.
+
+   c. **Replace ComputedAeroGroup entirely** — use `TabularAeroGroup` or a custom
+      aero group that runs `RoskamParasiteDragBuildUp` inside each mission phase.
+      This is the cleanest long-term path but is a larger architectural change.
+
+   Before wiring (any path), resolve the fuselage dimension inconsistency:
+   - CSV has `max_width = 0.30 m`, `max_height = 0.25 m`
+   - K_wf uses `FUSELAGE_EQUIV_DIAMETER_M = 0.169 m` (15 cm square equivalent)
+   - These must be made consistent before a Roskam CD0 wired into the polar is valid.
+
+   Before wiring, **double-check the wing exposed wetted-area calculation**:
+   `S_wet_wing = 2 * (S_ref - S_buried_in_fuselage)`, where the buried area must
+   come from the actual wing/fuselage intersection geometry rather than a rough
+   fuselage-width approximation.
 
 4. **DONE (v1.7.x)** — VTP wetted area: `Swet_vtp = 4 × Aircraft.VerticalTail.AREA`
    (2 panels × 2 sides, conservative no junction cutout).  `component_kind = 'vtp'`
@@ -450,7 +478,7 @@ Remaining questions:
 
 ---
 
-## CD_i <span style="color: #ef4444; font-weight: bold">[TODO]</span> — induced drag using effective AR from Scholz correction
+## CD_i <span style="color: #f59e0b; font-weight: bold">[PARTIAL — CDi wired; CD0 mission-polar wiring pending]</span> — induced drag using effective AR from Scholz correction
 
 The FLOPS drag polar uses `aircraft:wing:span_efficiency_factor` (fixed at 0.90
 in the CSV) and the geometric AR.  The Scholz AR correction (AR_eff) improves the
@@ -459,21 +487,108 @@ the load-factor subsystem.
 
 Steps:
 
-1. **Explicit CD_i component** — implement:
+1. **DONE (v1.8.0-v1.10.0)** — `RoskamInducedDragComp` in `induced_drag.py` implements
+   Roskam Part VI Eq. 4.8 (no-twist) with AR_eff:
 
-       e_eff    = span_efficiency * (AR_eff / AR_geo)   (approximate scaling)
-       CD_i     = CL^2 / (pi * AR_eff * e_eff)
+       CDi  = CL^2 / (pi * AR_eff * e)   (v1.8.1: no hidden 1.05 trim multiplier)
+       e    from Eq. 4.12: 1.1*(CL_alpha_w/AR_eff) / (R*(CL_alpha_w/AR_eff) + (1-R)*pi)
 
-   Connect `AR_eff` from `ScholzWingletARCorrection` and `CL` from the mission phase.
+   AR convention: **AR_eff must be used for ALL calculations** — lift, drag, pitch,
+   stability derivatives, anything and everything.  AR_eff is the output of
+   `ScholzWingletARCorrection` in `WingSurface`.  Geometric AR must not appear
+   in any new aerodynamic formula.
 
-2. **Replace or supplement FLOPS polar** — either override FLOPS `span_efficiency_factor`
-   with the AR_eff-consistent value, or subtract the FLOPS CD_i term and add the
-   corrected one.
+   Excluded twist terms (documented, not implemented — SpaJeti wing is untwisted):
+   - `2π * C_Lw * ε_t * V`  (twist-CL cross term)
+   - `4π² * ε_t² * w`       (pure twist term)
+   Implement when geometric twist is introduced as a design variable.
 
-3. **Add to detail print** — show CD_i alongside CL_alpha in `print_aero_detail`.
+   Component wired in `add_load_factor_subsystems`; `CDi` and `e_oswald` printed
+   in optimization results. As of v1.10.0, the component can compute the
+   leading-edge suction parameter from live wing geometry and atmosphere.
 
-4. **Sensitivity study** — compare range with geometric AR vs AR_eff in the polar
-   to quantify the benefit of the H-tail endplate design.
+2. **DONE (v1.13.0)** — CDi wired into FLOPS mission polar via `span_eff_correction`
+   ExecComp in `add_load_factor_subsystems`:
+
+       e_span_eff = e_oswald * AR_eff / AR_geo
+       aircraft:wing:span_efficiency_factor = e_span_eff   (promoted to model scope)
+
+   FLOPS `InducedDrag` then computes:
+       CDi_flops = CL^2 / (pi * AR_geo * e_span_eff)
+                 = CL^2 / (pi * AR_eff * e_oswald)  =  Roskam Eq. 4.8 ✓
+
+   `aircraft:wing:span_efficiency_factor` is NOT a pre-mission computed output in
+   Aviary (verified by listing all model outputs), so promoting our ExecComp output
+   to this name is safe — no connection conflict.
+
+3. **DONE (v1.8.0)** — `CDi` and `e_oswald` printed alongside CL_alpha in the
+   optimization results.
+
+4. **[TODO] Sensitivity study** — compare range with geometric AR vs AR_eff in the
+   polar to quantify the benefit of the H-tail endplate design.
+
+5. **[TODO] Add fuselage induced drag** -- implement the fuselage / body lift-induced
+   drag increment once the fuselage geometry is better defined. Required inputs:
+   fuselage length, equivalent diameter or cross-section distribution, body angle
+   of attack, exposed lifting-surface/fuselage intersection, and the sign convention
+   for whether this is added to `CDi` or tracked as a separate body-induced
+   increment before total `CD`.
+
+   DONE (v1.12.0) first report-only component:
+   `FuselageLiftInducedDragComp` implements Roskam Eq. 4.33 using
+   `alpha_max_deg`, `fuselage_base_area`, `fuselage_planform_area`, wing
+   reference area, `eta_finite_cylinder`, and `crossflow_drag_coefficient`.
+   Outputs `CDi_fus`, `CDi_fus_base_area_term`, and `CDi_fus_planform_term`.
+   It is wired into the SpaJeti model for printing only; it is not added to the
+   mission drag polar yet.
+
+   Remaining work:
+   - digitize/verify the Roskam charts for `eta` and `c_d_c` and replace the
+     current scalar placeholder inputs,
+   - decide whether final total induced drag should report `CDi_total = CDi_wing
+     + CDi_fus` before mission-polar integration,
+   - revisit the alpha source once aircraft `CL0` and full-aircraft `CL_alpha`
+     are available instead of using the current design-point `alpha_max_deg`.
+
+6. **[PARTIAL - v1.9.0-v1.10.0] Roskam leading-edge suction parameter from Figure 4.7** --
+   first-pass digitized helper added in `aero_utils.py`:
+   `leading_edge_suction_parameter_roskam(Re_LER, M, Lambda_LE, AR, taper)`.
+   `Re_LER = rho * U * r_LE / mu` is also implemented via
+   `leading_edge_reynolds_number_from_mach`, and NACA 4-digit `r_LE/c` estimates
+   are stored in `AirfoilData`.
+
+   v1.10.0 wiring:
+   - `MACGeometryComp` now outputs live `wing_le_sweep`.
+   - `RoskamInducedDragComp(compute_leading_edge_suction=True)` computes
+     `r_LE/c = 1.1019*(t/c)^2` from the live `wing_section_tc`, then computes
+     `r_LE = (r_LE/c)*MAC`, `Re_LER`, and Figure 4.7 `R`.
+   - The SpaJeti model promotes diagnostics as `wing_le_radius`, `wing_Re_LER`,
+     and `wing_le_suction_parameter`.
+   - Note: in the currently enabled high-x inset, `R` depends on
+     `AR_eff * taper / cos(Lambda_LE)` rather than `Re_LER`, so changing `t/c`
+     changes `r_LE` and `Re_LER` immediately but may not change `CDi` until the
+     lower-x main chart is digitized and enabled.
+
+   Remaining work:
+   - refine the digitized Figure 4.7 table from a cleaner source; current code
+     intentionally raises for the main chart (`x < 1.3e5`) until this is done,
+   - verify whether the NACA 4-digit nose-radius relation is acceptable for
+     non-NACA or modified airfoils; otherwise replace it with an airfoil-shape
+     model or measured `r_LE/c(t/c)` curve,
+   - replace placeholder Figure 4.7 digitization with a checked table before
+     using the value for final design decisions.
+
+7. **DONE (v1.11.0-v1.12.0) Parametric fuselage geometry backbone** -- added
+   `SuperellipseFuselageGeometry` in `geometry/flops_based/superellipse_fuselage.py`.
+   It outputs `fuselage_planform_area` (`S_plf_fus` candidate),
+   `fuselage_base_area` (`S_b_fus` candidate), wetted area, equivalent diameter,
+   fineness ratio, maximum cross-section area, volume, and geometric centroid.
+   As of v1.12.0, `S_plf_fus` and `S_b_fus` are wired into the report-only
+   fuselage drag-due-to-lift component. Parasite drag/CG/stability integration
+   remains pending.
+
+8. **[TODO] Fuselage base drag** -- implement base drag as a separate optional
+   term later. Keep it excluded from the next fuselage drag-due-to-lift step.
 
 ---
 

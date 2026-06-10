@@ -77,6 +77,7 @@ Outputs promoted to model scope (listed in call-site promotes_outputs)
     'wing_x_mac_le'                 -- x-station of MAC LE from nose (positive aft)
     'wing_z_mac_le'                 -- z-station of MAC LE from nose datum (positive down)
     'wing_x_mac_c4'                 -- x-station of MAC quarter-chord (aerodynamic centre x)
+    'wing_le_sweep'                 -- leading-edge sweep angle Lambda_LE
 
   VTPSurface:
     ('surface_CL_alpha', 'CL_alpha_v')
@@ -141,6 +142,9 @@ class AirfoilConstantsComp(om.IndepVarComp):
         self.add_output('section_max_thickness_location',
                         val=float(a.max_thickness_location), units='unitless',
                         desc=f'{a.name} maximum thickness location `(x/c)_m`')
+        self.add_output('section_leading_edge_radius_ratio',
+                        val=float(a.leading_edge_radius_ratio), units='unitless',
+                        desc=f'{a.name} leading-edge radius ratio `r_LE/c`')
 
 
 class LiftingSurfaceGroup(om.Group):
@@ -164,7 +168,7 @@ class LiftingSurfaceGroup(om.Group):
             promotes_outputs=[
                 'section_cl_alpha', 'section_cl_max', 'section_cd_min',
                 'section_cm_ac', 'section_tc', 'section_camber',
-                'section_max_thickness_location',
+                'section_max_thickness_location', 'section_leading_edge_radius_ratio',
             ],
         )
 
@@ -377,6 +381,7 @@ class WingSurface(LiftingSurfaceGroup):
                 ('x_mac_le',   'wing_x_mac_le'),
                 ('z_mac_le',   'wing_z_mac_le'),
                 ('x_mac_c4',   'wing_x_mac_c4'),
+                ('leading_edge_sweep', 'wing_le_sweep'),
             ],
         )
 

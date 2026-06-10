@@ -101,6 +101,8 @@ class MACGeometryComp(om.ExplicitComponent):
                         desc='z-station of MAC leading edge from nose datum (positive down)')
         self.add_output('x_mac_c4', val=0.893,  units='m',
                         desc='x-station of MAC quarter-chord from nose (aerodynamic centre x)')
+        self.add_output('leading_edge_sweep', val=3.97, units='deg',
+                        desc='Leading-edge sweep angle Lambda_LE')
 
     def setup_partials(self):
         self.declare_partials('*', '*', method='cs')
@@ -163,3 +165,4 @@ class MACGeometryComp(om.ExplicitComponent):
         outputs['x_mac_le']   = x_mac_le
         outputs['z_mac_le']   = z_mac_le
         outputs['x_mac_c4']   = x_mac_le + c_mac / 4.0
+        outputs['leading_edge_sweep'] = np.arctan(tan_le) * (180.0 / np.pi)
