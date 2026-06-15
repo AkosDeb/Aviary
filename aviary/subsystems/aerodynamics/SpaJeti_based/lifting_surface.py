@@ -88,15 +88,15 @@ Outputs promoted to model scope (listed in call-site promotes_outputs)
 import openmdao.api as om
 from aviary.variable_info.variables import Aircraft
 
-from aviary.subsystems.aerodynamics.flops_based.airfoil_data import AirfoilData
-from aviary.subsystems.aerodynamics.flops_based.surface_config import SurfaceConfig
-from aviary.subsystems.aerodynamics.flops_based.lift_curve_slope import (
+from aviary.subsystems.aerodynamics.SpaJeti_based.airfoil_data import AirfoilData
+from aviary.subsystems.aerodynamics.SpaJeti_based.surface_config import SurfaceConfig
+from aviary.subsystems.aerodynamics.SpaJeti_based.lift_curve_slope import (
     ScholzWingletARCorrection,
     LiftCurveSlopePolhamus,
 )
-from aviary.subsystems.aerodynamics.flops_based.cy_beta_vtp import CyBetaVtp, CyDeltaRudder
-from aviary.subsystems.aerodynamics.flops_based.mach_critical import MachCriticalComp
-from aviary.subsystems.aerodynamics.flops_based.surface_geometry import MACGeometryComp
+from aviary.subsystems.aerodynamics.SpaJeti_based.cy_beta_vtp import CyBetaVtp, CyDeltaRudder
+from aviary.subsystems.aerodynamics.SpaJeti_based.mach_critical import MachCriticalComp
+from aviary.subsystems.aerodynamics.SpaJeti_based.surface_geometry import MACGeometryComp
 
 
 class AirfoilConstantsComp(om.IndepVarComp):

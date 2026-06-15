@@ -250,8 +250,8 @@ prob.model.add_constraint('Ny', lower=5.0)
 
 ```python
 from aviary.subsystems.geometry.flops_based.htail_geometry import HTailGeometry
-from aviary.subsystems.aerodynamics.flops_based.cy_beta_vtp import CyBetaVtp, CyDeltaRudder
-from aviary.subsystems.aerodynamics.flops_based.lateral_load_factor import LateralLoadFactor
+from aviary.subsystems.aerodynamics.SpaJeti_based.cy_beta_vtp import CyBetaVtp, CyDeltaRudder
+from aviary.subsystems.aerodynamics.SpaJeti_based.lateral_load_factor import LateralLoadFactor
 
 model = om.Group()
 model.add_subsystem('geom',     HTailGeometry(),   promotes=['*'])
@@ -332,10 +332,10 @@ span) or raising alpha_max raises CL_alpha and CL_max proportionally.
 ### Wiring example
 
 ```python
-from aviary.subsystems.aerodynamics.flops_based.lift_curve_slope import (
+from aviary.subsystems.aerodynamics.SpaJeti_based.lift_curve_slope import (
     EndplateARCorrection, LiftCurveSlopePolhamus,
 )
-from aviary.subsystems.aerodynamics.flops_based.lateral_load_factor import (
+from aviary.subsystems.aerodynamics.SpaJeti_based.lateral_load_factor import (
     LongitudinalLoadFactor,
 )
 
@@ -359,11 +359,11 @@ prob.model.add_constraint('Nz', lower=<required_load_factor>)
 ```python
 import openmdao.api as om
 from aviary.subsystems.geometry.flops_based.htail_geometry       import HTailGeometry
-from aviary.subsystems.aerodynamics.flops_based.cy_beta_vtp      import CyBetaVtp, CyDeltaRudder
-from aviary.subsystems.aerodynamics.flops_based.lift_curve_slope import (
+from aviary.subsystems.aerodynamics.SpaJeti_based.cy_beta_vtp      import CyBetaVtp, CyDeltaRudder
+from aviary.subsystems.aerodynamics.SpaJeti_based.lift_curve_slope import (
     EndplateARCorrection, LiftCurveSlopePolhamus,
 )
-from aviary.subsystems.aerodynamics.flops_based.lateral_load_factor import (
+from aviary.subsystems.aerodynamics.SpaJeti_based.lateral_load_factor import (
     LateralLoadFactor, LongitudinalLoadFactor,
 )
 

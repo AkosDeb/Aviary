@@ -16,7 +16,7 @@ In ``phase_info``, disable the built-in FLOPS aero for every mission phase:
     ...
 """
 
-from aviary.subsystems.aerodynamics.flops_based.roskam_aero_group import RoskamMissionAeroGroup
+from aviary.subsystems.aerodynamics.SpaJeti_based.roskam_aero_group import RoskamMissionAeroGroup
 from aviary.subsystems.subsystem_builder import SubsystemBuilder
 from aviary.variable_info.variables import Aircraft, Dynamic
 
@@ -70,6 +70,26 @@ class RoskamAeroBuilder(SubsystemBuilder):
                 'shape': (1,),
                 'static_target': True,
                 'units': 'ft**2',
+            },
+            Aircraft.Wing.ASPECT_RATIO: {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'unitless',
+            },
+            Aircraft.Wing.SPAN_EFFICIENCY_FACTOR: {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'unitless',
+            },
+            Aircraft.Wing.SWEEP: {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'deg',
+            },
+            Aircraft.Wing.TAPER_RATIO: {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'unitless',
             },
         }
 

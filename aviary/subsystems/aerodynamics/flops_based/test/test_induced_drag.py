@@ -11,11 +11,11 @@ from aviary.subsystems.aerodynamics.aero_utils import (
     leading_edge_suction_parameter_roskam,
     wing_induced_drag_roskam,
 )
-from aviary.subsystems.aerodynamics.flops_based.induced_drag import (
+from aviary.subsystems.aerodynamics.SpaJeti_based.induced_drag import (
     FuselageLiftInducedDragComp,
-    InducedDrag,
     RoskamInducedDragComp,
 )
+from aviary.subsystems.aerodynamics.flops_based.induced_drag import InducedDrag
 from aviary.variable_info.variables import Aircraft, Dynamic
 
 
@@ -126,6 +126,8 @@ class InducedDragTest(unittest.TestCase):
         assert_near_equal(r_inset, 0.958, 1e-12)
 
     def test_fuselage_lift_induced_drag(self):
+        # fineness_ratio = 6.0 is an exact breakpoint -> eta = 0.64 (no interpolation)
+        # Mach = 0.0 -> Mc = 0.0 -> c_d_c = 1.20 (first table entry)
         prob = om.Problem()
         prob.model.add_subsystem('drag', FuselageLiftInducedDragComp(), promotes=['*'])
         prob.setup()
@@ -134,17 +136,46 @@ class InducedDragTest(unittest.TestCase):
         prob.set_val('fuselage_base_area', 0.0008343336047856176, units='m**2')
         prob.set_val('fuselage_planform_area', 0.228, units='m**2')
         prob.set_val('reference_area', 0.45, units='m**2')
-        prob.set_val('eta_finite_cylinder', 0.85)
-        prob.set_val('crossflow_drag_coefficient', 1.20)
+        prob.set_val('fuselage_fineness_ratio', 6.0)
+        prob.set_val('Mach', 0.0)
         prob.run_model()
 
         alpha = np.deg2rad(15.0)
-        base_term = 2.0 * alpha**2 * 0.0008343336047856176 / 0.45
-        planform_term = 0.85 * 1.20 * alpha**3 * 0.228 / 0.45
+        eta_expected   = 0.64   # exact table breakpoint l/d=6
+        c_dc_expected  = 1.20   # Mc = 0*sin(15°) = 0 -> first table entry
+        base_term      = 2.0 * alpha**2 * 0.0008343336047856176 / 0.45
+        planform_term  = eta_expected * c_dc_expected * alpha**3 * 0.228 / 0.45
 
-        assert_near_equal(prob.get_val('CDi_fus_base_area_term'), base_term, 1e-12)
-        assert_near_equal(prob.get_val('CDi_fus_planform_term'), planform_term, 1e-12)
-        assert_near_equal(prob.get_val('CDi_fus'), base_term + planform_term, 1e-12)
+        assert_near_equal(prob.get_val('eta_finite_cylinder'),        eta_expected,  1e-12)
+        assert_near_equal(prob.get_val('crossflow_drag_coefficient'), c_dc_expected, 1e-12)
+        assert_near_equal(prob.get_val('CDi_fus_base_area_term'), base_term,    1e-12)
+        assert_near_equal(prob.get_val('CDi_fus_planform_term'),  planform_term, 1e-12)
+        assert_near_equal(prob.get_val('CDi_fus'), base_term + planform_term,   1e-12)
+
+    def test_fuselage_lift_induced_drag_interpolated(self):
+        # fineness_ratio = 9.0  ->  eta = 0.64 + (9-6)/(12-6)*(0.71-0.64) = 0.675
+        # Mach = 0.5, alpha = 15 deg  ->  Mc = 0.5*sin(15°) ~ 0.1294
+        #   Mc is in [0, 0.25] interval -> c_d_c = 1.2 (flat segment)
+        prob = om.Problem()
+        prob.model.add_subsystem('drag', FuselageLiftInducedDragComp(), promotes=['*'])
+        prob.setup()
+
+        prob.set_val('aircraft_alpha', 15.0, units='deg')
+        prob.set_val('fuselage_base_area', 0.001, units='m**2')
+        prob.set_val('fuselage_planform_area', 0.228, units='m**2')
+        prob.set_val('reference_area', 0.45, units='m**2')
+        prob.set_val('fuselage_fineness_ratio', 9.0)
+        prob.set_val('Mach', 0.5)
+        prob.run_model()
+
+        alpha      = np.deg2rad(15.0)
+        eta_exp    = 0.64 + (9.0 - 6.0) / (12.0 - 6.0) * (0.71 - 0.64)   # 0.675
+        Mc         = 0.5 * np.sin(alpha)
+        c_dc_exp   = np.interp(Mc, [0.0, 0.25, 0.4, 0.5, 0.7],
+                                    [1.2, 1.2, 1.27, 1.37, 1.68])
+
+        assert_near_equal(prob.get_val('eta_finite_cylinder'),        eta_exp,  1e-10)
+        assert_near_equal(prob.get_val('crossflow_drag_coefficient'), c_dc_exp, 1e-10)
 
     def test_derivs(self):
         P = 2.60239151

@@ -14,7 +14,7 @@ import openmdao.api as om
 from aviary.subsystems.aerodynamics.aero_common import DynamicPressure
 from aviary.subsystems.aerodynamics.flops_based.induced_drag import InducedDrag
 from aviary.subsystems.aerodynamics.flops_based.lift import LiftEqualsWeight
-from aviary.subsystems.aerodynamics.flops_based.parasite_drag import RoskamParasiteDragBuildUp
+from aviary.subsystems.aerodynamics.SpaJeti_based.parasite_drag import RoskamParasiteDragBuildUp
 from aviary.variable_info.variables import Aircraft, Dynamic
 
 
@@ -62,28 +62,31 @@ class _GeomArrayAssembler(om.ExplicitComponent):
         self.declare_partials('*', '*', method='fd')
 
     def compute(self, inputs, outputs):
-        wing_chord = float(inputs[Aircraft.Wing.AREA]) / max(float(inputs[Aircraft.Wing.SPAN]), 1e-6)
-        vtp_chord = float(inputs[Aircraft.VerticalTail.AREA]) / max(float(inputs[Aircraft.VerticalTail.SPAN]), 1e-6)
-        fus_f = float(inputs[Aircraft.Fuselage.LENGTH]) / max(float(inputs[Aircraft.Fuselage.MAX_WIDTH]), 1e-6)
+        def _f(x):
+            return float(x.flat[0])
+
+        wing_chord = _f(inputs[Aircraft.Wing.AREA]) / max(_f(inputs[Aircraft.Wing.SPAN]), 1e-6)
+        vtp_chord = _f(inputs[Aircraft.VerticalTail.AREA]) / max(_f(inputs[Aircraft.VerticalTail.SPAN]), 1e-6)
+        fus_f = _f(inputs[Aircraft.Fuselage.LENGTH]) / max(_f(inputs[Aircraft.Fuselage.MAX_WIDTH]), 1e-6)
 
         outputs['wetted_area_arr'] = np.array([
-            float(inputs[Aircraft.Wing.WETTED_AREA]),
-            float(inputs[Aircraft.VerticalTail.WETTED_AREA]),
-            float(inputs[Aircraft.Fuselage.WETTED_AREA]),
+            _f(inputs[Aircraft.Wing.WETTED_AREA]),
+            _f(inputs[Aircraft.VerticalTail.WETTED_AREA]),
+            _f(inputs[Aircraft.Fuselage.WETTED_AREA]),
         ])
         outputs['char_length_arr'] = np.array([
             wing_chord,
             vtp_chord,
-            float(inputs[Aircraft.Fuselage.LENGTH]),
+            _f(inputs[Aircraft.Fuselage.LENGTH]),
         ])
         outputs['tc_arr'] = np.array([
-            float(inputs[Aircraft.Wing.THICKNESS_TO_CHORD]),
-            float(inputs[Aircraft.VerticalTail.THICKNESS_TO_CHORD]),
+            _f(inputs[Aircraft.Wing.THICKNESS_TO_CHORD]),
+            _f(inputs[Aircraft.VerticalTail.THICKNESS_TO_CHORD]),
             0.0,   # fuselage: body form factor uses fineness, not t/c
         ])
         outputs['sweep_arr'] = np.array([
-            float(inputs[Aircraft.Wing.SWEEP]),
-            float(inputs[Aircraft.VerticalTail.SWEEP]),
+            _f(inputs[Aircraft.Wing.SWEEP]),
+            _f(inputs[Aircraft.VerticalTail.SWEEP]),
             0.0,   # fuselage: not used by body form factor
         ])
         outputs['fineness_arr'] = np.array([

@@ -41,6 +41,49 @@ a correction to `CyDeltaRudder.CL_alpha_v`.
 
 ---
 
+## Aircraft 3-D visualizer <span style="color: #f59e0b; font-weight: bold">[PARTIAL — v1.14.0, 2026-06-15]</span>
+
+`aviary/visualization/plot_aircraft.py` — reads any Aviary CSV config and draws
+a matplotlib 3-D figure with no OpenMDAO run required.
+
+- Fuselage uses the real **`SuperellipseFuselageGeometry`** shape: smoothstep
+  nose/aft, superellipse cross-section, aft base fraction.
+- Wing, h-tail, v-tail, and nacelles drawn from standard CSV geometry variables.
+- All CSV units converted to metres internally (ft/m configs both work).
+- Superellipse params (`nose_frac`, `tail_frac`, `base_w_frac`, `base_h_frac`,
+  `exponent`) are kwargs to `visualize()` and CLI flags; defaults = SpaJeti baseline.
+- Documented in `aviary/visualization/README_plot_aircraft.md`.
+
+```bash
+python -m aviary.visualization.plot_aircraft \
+    aviary/models/aircraft/horizontal_small_uav/horizontal_small_uav.csv \
+    --nose-frac 0.20 --tail-frac 0.35 --base-w-frac 0.20 --base-h-frac 0.20 --exponent 4.0
+```
+
+### Remaining verification required
+
+All geometry components need to be visually checked against the actual aircraft
+design — shapes, proportions, and positions are first-pass estimates only:
+
+- **Wing position** — currently hardcoded at 35 % of fuselage length from nose.
+  Verify against actual wing apex location (`wing_x_apex` from `load_cond`).
+- **Wing vertical offset** — currently −20 % of fuselage height (low-mid wing).
+  Verify against actual mount height / `aircraft:wing:mount_location`.
+- **H-tail position** — trailing edge placed at 90 % of fuselage length.
+  Verify against actual moment arm or tail station.
+- **V-tail position** — same x as h-tail, root at top of fuselage.
+  Verify root attachment height, especially for T-tail vs conventional.
+- **Engine nacelle position** — centre follows the quarter-chord sweep line at
+  the given `wing_locations` fraction. Verify x-offset (fore/aft of LE) and
+  z-offset (below wing) against actual pylon geometry.
+- **Fuselage shape** — superellipse params default to SpaJeti baseline.
+  Confirm `nose_frac`, `tail_frac`, `base_w/h_frac`, and `exponent` match
+  the values used in `SuperellipseFuselageGeometry` in the run script.
+- **H-wing / twin-boom layout** — the current renderer draws a single central
+  fuselage. The H-wing twin-boom configuration is not yet represented.
+
+---
+
 ## Airfoil data per surface <span style="color: #22c55e; font-weight: bold">[DONE — v1.2.0, 2026-06-09]</span>
 
 `airfoil_data.py` -- `AirfoilData` frozen dataclass + NACA 0009/0012/2412/4412 catalog.
@@ -192,11 +235,11 @@ cruise alpha.  See step 5 below.
 
 ---
 
-## Parasite drag <span style="color: #f59e0b; font-weight: bold">[PARTIAL — build-up implemented; polar wiring pending]</span> — add fuselage and wing/VTP wetted-area drag
+## Parasite drag <span style="color: #f59e0b; font-weight: bold">[PARTIAL — wired into mission; input consistency checks pending]</span>
 
-The current FLOPS drag polar zeroes out VTP wetted area (`wetted_area = 0`) and uses
-a fixed fuselage wetted area in the CSV.  No component-level parasite drag breakdowns
-are tracked.
+**CD0 is live in the optimization cycle** via `RoskamAeroBuilder` / `RoskamMissionAeroGroup`
+replacing FLOPS `ComputedAeroGroup` in all 4 mission phases (confirmed `'method': 'external'`
+in `phase_info.py`). The old BLOCKED note below is **resolved** — path (c) was implemented.
 
 Steps:
 
@@ -231,39 +274,26 @@ Steps:
 
 2. **DONE** — Fuselage drag is included in step 1 above.
 
-3. **[BLOCKED] Wire Roskam CD0 into mission polar** — Aviary's pre-mission geometry
-   group (v1.13.0 investigation) COMPUTES and OWNS these outputs:
-   - `aircraft:fuselage:wetted_area` (from `pre_mission.core_subsystems.geometry.wetted_area.fus_swet`)
-   - `aircraft:vertical_tail:wetted_area` (from `...wetted_area.tail`)
+3. **DONE** — `RoskamAeroBuilder` registered in `run_horizontal_small_uav.py`
+   (`prob.load_external_subsystems([RoskamAeroBuilder(...)])`);
+   all mission phases set `'aerodynamics': {'method': 'external'}` in `phase_info.py`.
+   `RoskamParasiteDragBuildUp` runs live inside each phase — gradients of range
+   w.r.t. wetted area, t/c, and fineness ratio now flow through the mission polar.
 
-   Since these are pre-mission OUTPUTS, we cannot promote our own component outputs
-   to the same names without a connection conflict.
+   **Still required before trusting CD0 values:**
 
-   **Viable paths forward:**
+   - **Fuselage dimension consistency** — CSV has `max_width = 0.30 m`,
+     `max_height = 0.25 m`, but `K_wf` uses `FUSELAGE_EQUIV_DIAMETER_M = 0.169 m`
+     (15 cm square-fuselage estimate). These must agree before CD0 is valid.
+     Fix: compute equivalent diameter from superellipse area and update the constant.
 
-   a. **Wetted-area scalers** — `aircraft:vertical_tail:wetted_area_scaler` is already
-      in the CSV at 1.0. Setting it to 2.0 would double the single-panel VTP wetted
-      area to account for the two H-tail panels, IF the FLOPS formula gives per-panel
-      area. Need to verify what `prelim_swet` computes for `num_tails = 1`.
+   - **Wing exposed wetted area** — verify `S_wet_wing = 2 × (S_ref − S_buried)`,
+     where `S_buried` comes from the actual wing/fuselage intersection width,
+     not a rough estimate.
 
-   b. **`ZERO_LIFT_DRAG_COEFF_FACTOR` ratio** — run the model once to read the FLOPS
-      `CD0` output from the mission phase, then compute
-      `factor = CD0_roskam / CD0_flops` and wire `factor` as `aircraft:design:zero_lift_drag_coeff_factor`.
-      This replaces the FLOPS CD0 with ours but requires knowing the FLOPS value.
-
-   c. **Replace ComputedAeroGroup entirely** — use `TabularAeroGroup` or a custom
-      aero group that runs `RoskamParasiteDragBuildUp` inside each mission phase.
-      This is the cleanest long-term path but is a larger architectural change.
-
-   Before wiring (any path), resolve the fuselage dimension inconsistency:
-   - CSV has `max_width = 0.30 m`, `max_height = 0.25 m`
-   - K_wf uses `FUSELAGE_EQUIV_DIAMETER_M = 0.169 m` (15 cm square equivalent)
-   - These must be made consistent before a Roskam CD0 wired into the polar is valid.
-
-   Before wiring, **double-check the wing exposed wetted-area calculation**:
-   `S_wet_wing = 2 * (S_ref - S_buried_in_fuselage)`, where the buried area must
-   come from the actual wing/fuselage intersection geometry rather than a rough
-   fuselage-width approximation.
+   - **Figure 4.7 operating regime** — check that the design-point `x` value
+     (Re_LER × cot(Λ_LE) × √(1 − M²cos²(Λ_LE))) is > 1.3×10⁵ (high-x inset).
+     If x < 1.3×10⁵ the main chart raises `NotImplementedError`.
 
 4. **DONE (v1.7.x)** — VTP wetted area: `Swet_vtp = 4 × Aircraft.VerticalTail.AREA`
    (2 panels × 2 sides, conservative no junction cutout).  `component_kind = 'vtp'`
@@ -478,7 +508,7 @@ Remaining questions:
 
 ---
 
-## CD_i <span style="color: #f59e0b; font-weight: bold">[PARTIAL — CDi wired; CD0 mission-polar wiring pending]</span> — induced drag using effective AR from Scholz correction
+## CD_i <span style="color: #f59e0b; font-weight: bold">[PARTIAL — wing CDi wired; CDi_fus not yet in mission total]</span> — induced drag using effective AR from Scholz correction
 
 The FLOPS drag polar uses `aircraft:wing:span_efficiency_factor` (fixed at 0.90
 in the CSV) and the geometric AR.  The Scholz AR correction (AR_eff) improves the
@@ -694,11 +724,10 @@ Steps:
 
 ---
 
-## Aeroelasticity <span style="color: #ef4444; font-weight: bold">[TODO]</span> — wing divergence and flutter speed check
+## Aeroelasticity <span style="color: #f59e0b; font-weight: bold">[PARTIAL — module wired; VTP mass and section t/c refinements pending]</span> — wing divergence and flutter speed check
 
 As wing span and AR grow (optimizer pushes toward long, slender wing), divergence
 and flutter become the binding structural constraints before stress does.
-Neither is currently computed.
 
 Important prerequisite: any meaningful wing aeroelastic or elevon-surface load
 analysis needs a spanwise lift/load distribution, not only scalar CL/CL_alpha.
@@ -711,26 +740,33 @@ can be checked.
 
 Steps:
 
-1. **Divergence speed** — for a straight wing, torsional divergence speed is:
+1. **DONE** — Divergence speed: `StaticAeroelastic` in the aeroelasticity module.
 
-       V_D = sqrt(2 * GJ * e / (rho * c * a * e_distance))
+2. **DONE** — Flutter: `QuasiSteadyFlutterScreen` (quasi-steady p-k, CS derivatives)
+   and `PKFlutterAnalysis` (Theodorsen strip-theory GAF, full p-k iteration).
 
-   where `GJ` is torsional stiffness, `c` is chord, `a = dCL/dalpha`, and
-   `e_distance` is the distance between the shear centre and aerodynamic centre.
-   Implement a simplified estimate using structural scalars from the mass model.
+3. **DONE (v1.15.0)** — Constraints wired into optimizer:
+   - `aeroelasticity:divergence_speed_margin >= 0` (V_div >= V_dive = 1.25 * V_design)
+   - `aeroelasticity:max_real_eigenvalue_at_design <= 0` (smooth CS-differentiable flutter metric)
+   - Flutter speed margin and PK flutter speed reported for information.
 
-2. **Flutter** — simplified Theodorsen-strip approach or a mass-ratio / frequency-
-   ratio criterion (Collar triangle).  Even a conservative margin check
-   (`V_flutter > 1.2 * V_dive`) would bound the design space.
+4. **PARTIAL (v1.15.0)** — Aeroelastic AR correction diagnostic:
+   `AR_eff_ae = AR_eff * (1 - q_design / q_div)` computed by `ae_ar_correction` ExecComp.
+   Reported post-optimization; not yet fed back into the mission CDi polar.
+   Wire `AR_eff_ae` into `span_eff_correction` once divergence margins are comfortable.
 
-3. **Constraint** — add `V_divergence > V_dive` and `V_flutter > V_dive` as
-   optimizer constraints, where `V_dive = 1.25 * V_cruise`.
+5. **DONE (v1.15.0)** — Inputs wired: `aircraft:wing:span`, `aircraft:wing:taper_ratio`,
+   `aircraft:wing:thickness_to_chord`, `wing_CL_alpha` (via explicit connect),
+   ISA 5000m air density, and `V_dive = 1.25 * V_design` as required speed.
 
-4. **Aeroelastic AR penalty** — on a very flexible wing, the effective span is
-   reduced by wash-out; quantify the correction to AR_eff from `ScholzWingletARCorrection`.
-
-5. **Connection** — wire `aircraft:wing:span`, `aircraft:wing:taper_ratio`,
-   `aircraft:wing:thickness_to_chord` (proxy for `GJ`), and cruise dynamic pressure.
+Remaining gaps:
+- `aircraft:vertical_tail:mass_scaler = 0.0` in CSV means FLOPS outputs 0 kg VTP mass.
+  `VTPTipInertia` receives 0 kg → flutter analysis ignores VTP tip inertia (unconservative).
+  Fix: expose `aeroelasticity:vtp_mass` as a separate user input in VTPTipInertia so the
+  FLOPS variable name conflict is avoided.
+- `aircraft:wing:thickness_to_chord` (CSV fixed = 0.15) is used for structural stiffness;
+  `wing_section_tc` (optimizer DV) is used for M_crit but not yet connected to the
+  structural box.  Connect when t/c response in GJ is validated.
 
 ---
 

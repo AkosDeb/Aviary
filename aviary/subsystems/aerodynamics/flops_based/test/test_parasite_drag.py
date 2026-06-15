@@ -16,7 +16,7 @@ from aviary.subsystems.aerodynamics.aero_utils import (
     roughness_cutoff_reynolds,
     wing_fuselage_interference_factor,
 )
-from aviary.subsystems.aerodynamics.flops_based.parasite_drag import RoskamParasiteDragBuildUp
+from aviary.subsystems.aerodynamics.SpaJeti_based.parasite_drag import RoskamParasiteDragBuildUp
 
 
 def test_atmosphere_and_flat_plate_helpers():

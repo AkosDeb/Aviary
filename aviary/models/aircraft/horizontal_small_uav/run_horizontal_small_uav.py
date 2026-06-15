@@ -1,4 +1,5 @@
 import csv
+import math
 import os
 import shutil
 import sys
@@ -29,19 +30,24 @@ from aviary.subsystems.geometry.flops_based.htail_geometry import HTailGeometry
 from aviary.subsystems.geometry.flops_based.cg_estimator import CGEstimatorGroup
 from aviary.subsystems.geometry.flops_based.superellipse_fuselage import (
     SuperellipseFuselageGeometry,
+    superellipse_area,
 )
-from aviary.subsystems.aerodynamics.flops_based.airfoil_data import NACA_0012, NACA_4415
-from aviary.subsystems.aerodynamics.flops_based.surface_config import SurfaceConfig
-from aviary.subsystems.aerodynamics.flops_based.lifting_surface import WingSurface, VTPSurface
-from aviary.subsystems.aerodynamics.flops_based.lateral_load_factor import (
+from aviary.subsystems.aerodynamics.SpaJeti_based.airfoil_data import NACA_0012, NACA_4415
+from aviary.subsystems.aerodynamics.SpaJeti_based.surface_config import SurfaceConfig
+from aviary.subsystems.aerodynamics.SpaJeti_based.lifting_surface import WingSurface, VTPSurface
+from aviary.subsystems.aerodynamics.SpaJeti_based.lateral_load_factor import (
     LateralLoadFactor,
     LongitudinalLoadFactor,
 )
-from aviary.subsystems.aerodynamics.flops_based.induced_drag import (
+from aviary.subsystems.aerodynamics.SpaJeti_based.induced_drag import (
     FuselageLiftInducedDragComp,
     RoskamInducedDragComp,
 )
 from aviary.subsystems.aerodynamics.roskam_aero_builder import RoskamAeroBuilder
+from aviary.models.external_subsystems.aeroelasticity.aeroelasticity_builder import (
+    AeroelasticityGroup,
+)
+from aviary.models.external_subsystems.aeroelasticity.variables import Aeroelasticity as AE
 
 
 AIRCRAFT_DATA = Path(__file__).with_name('horizontal_small_uav.csv')
@@ -54,7 +60,7 @@ ENGINE_MASS_LIMIT_KG = 5.0
 #   patch (x.y.Z) -- bug fix, doc tweak, parameter change
 #   minor (x.Y.0) -- new physics component or constraint
 #   major (X.0.0) -- architectural redesign (new DV set, new EOM, new mission)
-MODEL_VERSION = '1.14.0'
+MODEL_VERSION = '1.16.0'
 
 OUTPUT_ROOT = REPO_ROOT / 'outputs'
 PROBLEM_NAME = 'run_horizontal_small_uav'
@@ -69,20 +75,31 @@ FUEL_BUDGET_MARGIN = 'horizontal_small_uav:fuel_budget_margin'
 CONSTRAINT_MACH = 0.477
 CONSTRAINT_Q_PA = 8_581.0
 
-# ── Fuselage equivalent diameter for K_wf (rounded-square, 15 cm side) ────────
-# d_eq = 0.15 * sqrt(4/pi) ~ 0.169 m
-FUSELAGE_EQUIV_DIAMETER_M = 0.169
-
 # ── Parametric fuselage geometry defaults ────────────────────────────────────
-FUSELAGE_NOSE_LENGTH_FRACTION = 0.20
-FUSELAGE_TAIL_LENGTH_FRACTION = 0.35
-FUSELAGE_BASE_WIDTH_FRACTION  = 0.20
-FUSELAGE_BASE_HEIGHT_FRACTION = 0.20
+# Rounded-square cross-section: width = height, with rounded edges from the
+# superellipse exponent. This local geometry feeds drag-reporting geometry and
+# fuselage-intersection estimates; legacy CSV max_width/max_height entries are
+# not used by this local geometry path.
+FUSELAGE_ROUNDED_SQUARE_SIDE_M = 0.30
+FUSELAGE_MAX_WIDTH_M           = FUSELAGE_ROUNDED_SQUARE_SIDE_M
+FUSELAGE_MAX_HEIGHT_M          = FUSELAGE_ROUNDED_SQUARE_SIDE_M
+FUSELAGE_NOSE_LENGTH_FRACTION  = 0.20
+FUSELAGE_TAIL_LENGTH_FRACTION  = 0.35
+FUSELAGE_BASE_WIDTH_FRACTION   = 0.20
+FUSELAGE_BASE_HEIGHT_FRACTION  = 0.20
 FUSELAGE_SUPERELLIPSE_EXPONENT = 4.0
 
-# ── Fuselage lift-induced drag placeholders (Roskam Part VI Fig. interpolation pending)
-FUSELAGE_ETA_FINITE_CYLINDER = 0.85
-FUSELAGE_CROSSFLOW_DRAG_COEFFICIENT = 1.20
+# ── Fuselage equivalent diameter for K_wf ─────────────────────────────────────
+# d_eq = sqrt(4 * A_max / pi) where A_max is the max-section superellipse area.
+# Same formula as SuperellipseFuselageGeometry so K_wf and the post-run geometry
+# report use a consistent diameter.
+_fus_A_max = superellipse_area(
+    FUSELAGE_MAX_WIDTH_M, FUSELAGE_MAX_HEIGHT_M, FUSELAGE_SUPERELLIPSE_EXPONENT
+)
+FUSELAGE_EQUIV_DIAMETER_M = math.sqrt(4.0 * _fus_A_max / math.pi)
+
+# (Fuselage eta and c_d_c are now interpolated inside FuselageLiftInducedDragComp
+#  from the Roskam Part VI lookup tables — no module-level constants needed.)
 
 # ── Fixed rudder parameters ───────────────────────────────────────────────────
 RUDDER_CF_C       = 0.25   # rudder chord / VTP chord
@@ -186,6 +203,17 @@ H_WING_INTERFERENCE_FACTOR = 1.04
 # Used by the parasite drag report (dash flight condition, same as Ny/Nz constraint).
 CRUISE_STATIC_PRESSURE_PA = 54048.0   # Pa
 CRUISE_TEMPERATURE_K       = 255.65   # K
+
+# ── ISA 5 000 m air density for aeroelastic analysis ─────────────────────────
+ISA_5KM_DENSITY_KGM3 = 0.7357   # kg/m³
+
+# ── Aeroelastic speed constraints (TOOD.md Aeroelasticity step 3) ─────────────
+# V_dive = 1.25 * V_design per CS-23/CS-VLA convention; divergence and flutter
+# speeds must exceed V_dive.  The quasi-steady flutter screen uses the smooth
+# MAX_REAL_EIGENVALUE_AT_DESIGN output as the optimizer constraint (exact CS
+# derivatives); FLUTTER_SPEED_MARGIN is reported for information only.
+DIVE_SPEED_FACTOR = 1.25
+AERO_REQUIRED_SPEED_MS = DIVE_SPEED_FACTOR * 550.0 / 3.6   # 190.97 m/s
 
 # ── Output detail flag ────────────────────────────────────────────────────────
 PRINT_AERO_DETAIL = True  # set False to suppress the wing/VTP/rudder aero breakdown
@@ -600,11 +628,11 @@ def add_load_factor_subsystems(prob):
     fixed.add_output('rudder_eta_tip',   val=RUDDER_ETA_TIP,      units='unitless')
     fixed.add_output('fus_nose_frac',    val=FUSELAGE_NOSE_LENGTH_FRACTION, units='unitless')
     fixed.add_output('fus_tail_frac',    val=FUSELAGE_TAIL_LENGTH_FRACTION, units='unitless')
+    fixed.add_output('fus_max_width',    val=FUSELAGE_MAX_WIDTH_M,  units='m')
+    fixed.add_output('fus_max_height',   val=FUSELAGE_MAX_HEIGHT_M, units='m')
     fixed.add_output('fus_base_width_frac',  val=FUSELAGE_BASE_WIDTH_FRACTION,  units='unitless')
     fixed.add_output('fus_base_height_frac', val=FUSELAGE_BASE_HEIGHT_FRACTION, units='unitless')
     fixed.add_output('fus_superellipse_exp', val=FUSELAGE_SUPERELLIPSE_EXPONENT, units='unitless')
-    fixed.add_output('fus_eta_finite_cylinder', val=FUSELAGE_ETA_FINITE_CYLINDER, units='unitless')
-    fixed.add_output('fus_crossflow_cd', val=FUSELAGE_CROSSFLOW_DRAG_COEFFICIENT, units='unitless')
     fixed.add_output('design_mach',      val=CONSTRAINT_MACH,     units='unitless',
                      desc='Mach at the constraint flight condition -- shared by all surface Polhamus instances')
     fixed.add_output('constraint_static_pressure', val=CRUISE_STATIC_PRESSURE_PA, units='Pa',
@@ -634,8 +662,8 @@ def add_load_factor_subsystems(prob):
         SuperellipseFuselageGeometry(),
         promotes_inputs=[
             ('fuselage_length', av.Aircraft.Fuselage.LENGTH),
-            ('max_width', av.Aircraft.Fuselage.MAX_WIDTH),
-            ('max_height', av.Aircraft.Fuselage.MAX_HEIGHT),
+            ('max_width', 'fus_max_width'),
+            ('max_height', 'fus_max_height'),
             ('nose_length_fraction', 'fus_nose_frac'),
             ('tail_length_fraction', 'fus_tail_frac'),
             ('base_width_fraction', 'fus_base_width_frac'),
@@ -645,6 +673,7 @@ def add_load_factor_subsystems(prob):
         promotes_outputs=[
             'fuselage_planform_area',
             'fuselage_base_area',
+            'fuselage_base_diameter',
             'fuselage_wetted_area',
             'fuselage_equivalent_diameter',
             'fuselage_fineness_ratio',
@@ -768,13 +797,15 @@ def add_load_factor_subsystems(prob):
             'fuselage_base_area',
             'fuselage_planform_area',
             ('reference_area', av.Aircraft.Wing.AREA),
-            ('eta_finite_cylinder', 'fus_eta_finite_cylinder'),
-            ('crossflow_drag_coefficient', 'fus_crossflow_cd'),
+            'fuselage_fineness_ratio',
+            ('Mach', 'design_mach'),
         ],
         promotes_outputs=[
             'CDi_fus',
             'CDi_fus_base_area_term',
             'CDi_fus_planform_term',
+            'eta_finite_cylinder',
+            'crossflow_drag_coefficient',
         ],
     )
 
@@ -802,6 +833,55 @@ def add_load_factor_subsystems(prob):
         promotes_outputs=[
             ('e_span_eff', av.Aircraft.Wing.SPAN_EFFICIENCY_FACTOR),
         ],
+    )
+
+
+def add_aeroelasticity_subsystems(prob):
+    """Add the aeroelasticity module and the aeroelastic AR correction to the model.
+
+    The AeroelasticityGroup is added directly at model scope (not inside pre_mission)
+    so it can receive wing_CL_alpha from wing_surface without creating an execution-
+    order cycle through the pre_mission group.
+
+    Implements TOOD.md Aeroelasticity steps 3 (constraints wired in build_problem),
+    4 (AR_eff wash-in correction diagnostic), and 5 (input connections).
+    """
+    model = prob.model
+
+    # ── Step 5: connect wing geometry and CL_alpha ────────────────────────────
+    # Aircraft.Wing.* and Aircraft.VerticalTail.* auto-connect via promotes=['*']
+    # from Aviary pre_mission. Only wing_CL_alpha needs an explicit connection
+    # because it is computed outside pre_mission by add_load_factor_subsystems.
+    model.add_subsystem(
+        'aeroelasticity',
+        AeroelasticityGroup(material_name='aluminum_6061_t6'),
+        promotes_inputs=['*'],
+        promotes_outputs=['*'],
+    )
+    model.connect('wing_CL_alpha', AE.LIFT_CURVE_SLOPE)
+
+    # ── Step 4: aeroelastic AR wash-in correction (diagnostic, not optimizer DV)
+    # Below divergence the wing twists nose-up (wash-in since EA is aft of AC),
+    # amplifying loads by 1/(1-q/q_div).  For induced drag the effective AR
+    # degrades by the same factor:
+    #   AR_eff_ae = AR_eff * (1 - q_design / q_div)
+    # Reported as a measure of aeroelastic flexibility.  If AR_eff_ae deviates
+    # significantly from AR_eff, the CDi and range calculation should account for it.
+    model.add_subsystem(
+        'ae_ar_correction',
+        om.ExecComp(
+            'AR_eff_ae = AR_eff * fmax(1.0 - q_design / q_div, 0.0)',
+            AR_eff={'val': 8.0, 'units': 'unitless'},
+            q_design={'val': CONSTRAINT_Q_PA, 'units': 'Pa'},
+            q_div={'val': 1.0e6, 'units': 'Pa'},
+            AR_eff_ae={'val': 8.0, 'units': 'unitless'},
+        ),
+        promotes_inputs=[
+            'AR_eff',
+            ('q_design', 'dynamic_pressure'),
+            ('q_div', AE.DIVERGENCE_DYNAMIC_PRESSURE),
+        ],
+        promotes_outputs=['AR_eff_ae'],
     )
 
 
@@ -1010,7 +1090,10 @@ def build_problem():
         work_dir=OUTPUT_ROOT,
     )
     prob.load_inputs(aircraft_data=AIRCRAFT_DATA, phase_info=phase_info)
-    prob.load_external_subsystems([SmallTurbojetModel()])
+    prob.load_external_subsystems([
+        SmallTurbojetModel(),
+        RoskamAeroBuilder(h_wing_interference_factor=H_WING_INTERFERENCE_FACTOR),
+    ])
 
     prob.check_and_preprocess_inputs()
     apply_aircraft_mass_and_fuel_limits(prob)
@@ -1023,6 +1106,7 @@ def build_problem():
 
     prob.add_pre_mission_systems()
     add_load_factor_subsystems(prob)
+    add_aeroelasticity_subsystems(prob)
     prob.add_phases()
     prob.add_post_mission_systems()
     add_fuel_budget_constraint(prob)
@@ -1075,6 +1159,17 @@ def build_problem():
         lower=TW_MIN * MAX_TAKEOFF_MASS_KG * 9.80665,
         units='N', ref=300.0,
     )
+    # ── Aeroelastic constraints (TOOD.md Aeroelasticity step 3) ──────────────
+    # Divergence: V_div >= V_dive = 1.25 * V_design (CS gradient via StaticAeroelastic)
+    prob.model.add_constraint(
+        AE.DIVERGENCE_SPEED_MARGIN, lower=0.0, units='m/s', ref=50.0,
+    )
+    # Flutter: smooth eigenvalue metric from QuasiSteadyFlutterScreen (exact CS
+    # derivatives).  MAX_REAL_EIGENVALUE_AT_DESIGN <= 0 means the design-point
+    # state matrix has no growing mode.  Flutter speed margin is reported only.
+    prob.model.add_constraint(
+        AE.MAX_REAL_EIGENVALUE_AT_DESIGN, upper=0.0, units='1/s', ref=1.0,
+    )
 
     prob.add_objective()
 
@@ -1085,8 +1180,12 @@ def build_problem():
     prob.set_val(av.Aircraft.VerticalTail.SPAN, VTP_SPAN_INITIAL_M, 'm')
     prob.set_val('wing_section_tc', WING_TC_INITIAL)
 
-    # Mach, section lift slope, fuselage diameter, and alpha_max are now wired through
-    # IndepVarComps (load_cond) and surface Groups (AirfoilConstantsComp, fus_const).
+    # ── Aeroelasticity initial conditions ────────────────────────────────────
+    # Override default 1.225 kg/m³ (sea level) with ISA 5 000 m density.
+    prob.set_val(AE.AIR_DENSITY, ISA_5KM_DENSITY_KGM3, units='kg/m**3')
+    # Override the group's default REQUIRED_SPEED (1.15 * V_design) with the
+    # V_dive = 1.25 * V_design constraint per TOOD.md step 3.
+    prob.set_val(AE.REQUIRED_SPEED, AERO_REQUIRED_SPEED_MS, units='m/s')
 
     return prob, engine_mass_upper_kg, cg_est
 
@@ -1146,6 +1245,21 @@ def print_parasite_drag_detail(prob):
     # Wing: (planform - buried panel at fuselage root) × 2 sides
     s_buried  = (FUSELAGE_EQUIV_DIAMETER_M / 2.0) * wing_root_chord  # one-sided
     swet_wing = (wing_area - s_buried) * 2.0
+
+    # ── Wetted area sanity checks ──────────────────────────────────────────────
+    if not (0.0 < s_buried < wing_area):
+        raise ValueError(
+            f'Wing buried area sanity check FAILED: s_buried = {s_buried:.5f} m² '
+            f'must satisfy 0 < s_buried < {wing_area:.5f} m². '
+            f'Check FUSELAGE_EQUIV_DIAMETER_M = {FUSELAGE_EQUIV_DIAMETER_M:.4f} m '
+            f'and wing_root_chord = {wing_root_chord:.4f} m.'
+        )
+    if not (0.0 < swet_wing <= 2.0 * wing_area):
+        raise ValueError(
+            f'Wing exposed wetted area sanity check FAILED: swet_wing = {swet_wing:.5f} m² '
+            f'must satisfy 0 < swet_wing <= {2.0 * wing_area:.5f} m². '
+            f'Check fuselage diameter and wing planform area.'
+        )
 
     # VTP: S_wet = S_ref_vtp_total × 2  where S_ref_vtp_total = 2 panels × vtp_area
     # = 4 × vtp_area_per_panel.  Conservative: no junction cutout at wing-VTP root.
@@ -1227,9 +1341,10 @@ def print_parasite_drag_detail(prob):
     print(f'    VTP×2 Swet = 4 × Aircraft.VerticalTail.AREA  '
           f'(2 panels × 2 sides, no cutout -- conservative)')
     print(f'    Wing buried panel at root ≈ {s_buried:.5f} m²  '
-          f'(d_fus/2 × c_root)  [d_fus = {FUSELAGE_EQUIV_DIAMETER_M:.4f} m hardcoded for K_wf]')
+          f'(d_fus/2 × c_root)  [d_fus = FUSELAGE_EQUIV_DIAMETER_M = {FUSELAGE_EQUIV_DIAMETER_M:.4f} m]')
     print(f'    Fuselage Swet / d_eq / fineness from SuperellipseFuselageGeometry (live)')
-    print(f'    Fuselage d_eq = {fus_equiv_diam:.4f} m,  fineness l/d = {fus_fineness:.1f}')
+    print(f'    Fuselage d_eq (model) = {fus_equiv_diam:.4f} m,  FUSELAGE_EQUIV_DIAMETER_M = {FUSELAGE_EQUIV_DIAMETER_M:.4f} m'
+          f'  (should match),  fineness l/d = {fus_fineness:.1f}')
 
 
 def build_xdsm_problem():
@@ -1245,7 +1360,8 @@ def main():
     print('  Layout          : H-tail (wing + twin-VTP endplates) + small turbojet')
     print('  Design variables: wing span, VTP span, wing section t/c, scaled SLS thrust, phase Mach')
     print('  Constraints     : Ny >= 7, Nz >= 7 (550 km/h, 5 km), T/W >= 1.5, fuel,')
-    print(f'                    M_crit >= {MACH_UPPER_BOUND:.2f} (DASH + {M_CRIT_SAFETY_MARGIN:.2f})')
+    print(f'                    M_crit >= {MACH_UPPER_BOUND:.2f} (DASH + {M_CRIT_SAFETY_MARGIN:.2f}),')
+    print(f'                    V_div >= {AERO_REQUIRED_SPEED_MS:.1f} m/s, lambda_max(design) <= 0')
     print('  Objective       : maximize range')
     print(f'  Method          : {OPTIMIZER} gradient-based')
     print('=' * 70 + '\n')
@@ -1281,6 +1397,7 @@ def main():
     print_result('Fuselage Length',   safe_get(prob, av.Aircraft.Fuselage.LENGTH, 'm'), 'm')
     print_result('Fuselage S_plf',    safe_get(prob, 'fuselage_planform_area', 'm**2'), 'm^2')
     print_result('Fuselage S_b',      safe_get(prob, 'fuselage_base_area', 'm**2'), 'm^2')
+    print_result('Fuselage d_b',      safe_get(prob, 'fuselage_base_diameter', 'm'), 'm')
     print_result('Fuselage Swet geom', safe_get(prob, 'fuselage_wetted_area', 'm**2'), 'm^2')
     print_result('Fuselage d_eq geom', safe_get(prob, 'fuselage_equivalent_diameter', 'm'), 'm')
     print_result('Fuselage fineness geom', safe_get(prob, 'fuselage_fineness_ratio'), '')
@@ -1312,6 +1429,8 @@ def main():
     print_result('CDi_fus (Roskam Eq 4.33)',       safe_get(prob, 'CDi_fus'), '[report-only]')
     print_result('  CDi_fus base-area term',       safe_get(prob, 'CDi_fus_base_area_term'), '')
     print_result('  CDi_fus planform term',        safe_get(prob, 'CDi_fus_planform_term'), '')
+    print_result('  eta (l/d interp, Fig 4.32)',   safe_get(prob, 'eta_finite_cylinder'), '')
+    print_result('  c_d_c (Mc interp, Fig 4.31)',  safe_get(prob, 'crossflow_drag_coefficient'), '')
     print_result('e_oswald (Roskam Eq 4.12)',      safe_get(prob, 'e_oswald'), '')
     print_result('Wing r_LE',                      safe_get(prob, 'wing_le_radius', 'm'), 'm')
     print_scientific_result('Wing Re_LER',         safe_get(prob, 'wing_Re_LER'), '')
@@ -1322,6 +1441,39 @@ def main():
                  f'(DASH={DASH_MACH} + {M_CRIT_SAFETY_MARGIN})')
     print_result('mach_crit_margin (M_crit - check)',
                  safe_get(prob, 'mach_crit_margin'), '[min 0.00]')
+
+    print('\nAeroelasticity (TOOD.md step 3-5):')
+    print('-' * 70)
+    div_speed  = safe_get(prob, AE.DIVERGENCE_SPEED, 'm/s')
+    div_margin = safe_get(prob, AE.DIVERGENCE_SPEED_MARGIN, 'm/s')
+    rev_speed  = safe_get(prob, AE.REVERSAL_SPEED, 'm/s')
+    rev_margin = safe_get(prob, AE.REVERSAL_SPEED_MARGIN, 'm/s')
+    flutter_v  = safe_get(prob, AE.FLUTTER_SPEED, 'm/s')
+    flutter_m  = safe_get(prob, AE.FLUTTER_SPEED_MARGIN, 'm/s')
+    lambda_max = safe_get(prob, AE.MAX_REAL_EIGENVALUE_AT_DESIGN, '1/s')
+    pk_v       = safe_get(prob, AE.PK_FLUTTER_SPEED, 'm/s')
+    pk_m       = safe_get(prob, AE.PK_FLUTTER_SPEED_MARGIN, 'm/s')
+    ar_eff_ae  = safe_get(prob, 'AR_eff_ae')
+    ar_eff_rig = safe_get(prob, 'AR_eff')
+    div_q      = safe_get(prob, AE.DIVERGENCE_DYNAMIC_PRESSURE, 'Pa')
+    print_result('V_required (1.25 * V_design)',  AERO_REQUIRED_SPEED_MS,   'm/s')
+    print_result('Divergence speed V_div',         div_speed,  'm/s')
+    print_result('Divergence speed margin [min 0]', div_margin, 'm/s')
+    print_result('Reversal speed V_rev',           rev_speed,  'm/s')
+    print_result('Reversal speed margin',           rev_margin, 'm/s')
+    print_result('Flutter speed V_f (QS bisection)', flutter_v, 'm/s [informational]')
+    print_result('Flutter speed margin',           flutter_m,  'm/s [informational]')
+    print_result('lambda_max at design [max 0]',   lambda_max, '1/s')
+    print_result('PK flutter speed (Theodorsen)',   pk_v,       'm/s [informational]')
+    print_result('PK flutter speed margin',         pk_m,       'm/s [informational]')
+    print()
+    print_result('AR_eff (rigid Scholz)',            ar_eff_rig, '')
+    print_result('AR_eff_ae (aeroelastic corrected)', ar_eff_ae, '')
+    if not any(isinstance(v, str) for v in (ar_eff_ae, ar_eff_rig, div_q)):
+        flex_ratio = CONSTRAINT_Q_PA / div_q
+        ae_penalty_pct = (ar_eff_rig - ar_eff_ae) / ar_eff_rig * 100.0
+        print_result('  q_design / q_div (flexibility)', flex_ratio,      '')
+        print_result('  AR_eff aeroelastic penalty',     ae_penalty_pct, '%')
     sls_thrust = safe_get(prob, av.Aircraft.Engine.SCALED_SLS_THRUST, 'N')
     print_result('SLS Thrust', sls_thrust, 'N')
     if not isinstance(sls_thrust, str):

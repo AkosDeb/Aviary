@@ -145,6 +145,8 @@ class SuperellipseFuselageGeometry(om.ExplicitComponent):
         ``S_plf_fus`` candidate.
     fuselage_base_area : m**2
         Aft-end cross-section area, the Roskam ``S_b_fus`` candidate.
+    fuselage_base_diameter : m
+        Diameter of a circle with the same aft-end cross-section area.
     fuselage_wetted_area : m**2
         Numerical loft wetted area, excluding base cap area.
     fuselage_equivalent_diameter : m
@@ -175,6 +177,7 @@ class SuperellipseFuselageGeometry(om.ExplicitComponent):
 
         self.add_output('fuselage_planform_area', val=0.24, units='m**2')
         self.add_output('fuselage_base_area', val=0.004, units='m**2')
+        self.add_output('fuselage_base_diameter', val=0.07, units='m')
         self.add_output('fuselage_wetted_area', val=0.9, units='m**2')
         self.add_output('fuselage_equivalent_diameter', val=0.17, units='m')
         self.add_output('fuselage_fineness_ratio', val=12.0, units='unitless')
@@ -260,9 +263,11 @@ class SuperellipseFuselageGeometry(om.ExplicitComponent):
             num_theta=self.options['num_theta'],
         )
         equivalent_diameter = np.sqrt(4.0 * max_area / np.pi)
+        base_diameter = np.sqrt(4.0 * base_area / np.pi)
 
         outputs['fuselage_planform_area'] = planform_area
         outputs['fuselage_base_area'] = base_area
+        outputs['fuselage_base_diameter'] = base_diameter
         outputs['fuselage_wetted_area'] = wetted_area
         outputs['fuselage_equivalent_diameter'] = equivalent_diameter
         outputs['fuselage_fineness_ratio'] = length / equivalent_diameter

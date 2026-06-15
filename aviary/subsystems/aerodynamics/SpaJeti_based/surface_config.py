@@ -8,7 +8,7 @@ from a single immutable config object.
 
 from dataclasses import dataclass
 
-from aviary.subsystems.aerodynamics.flops_based.airfoil_data import AirfoilData
+from aviary.subsystems.aerodynamics.SpaJeti_based.airfoil_data import AirfoilData
 
 
 @dataclass(frozen=True)

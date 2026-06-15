@@ -37,6 +37,7 @@ class SuperellipseFuselageGeometryTest(unittest.TestCase):
 
         assert_near_equal(prob.get_val('fuselage_planform_area', units='m**2'), 0.228, 1e-12)
         assert_near_equal(prob.get_val('fuselage_base_area', units='m**2'), 0.0008343336047856176, 1e-12)
+        assert_near_equal(prob.get_val('fuselage_base_diameter', units='m'), 0.03259304433639925, 1e-12)
         assert_near_equal(prob.get_val('fuselage_wetted_area', units='m**2'), 0.8034338150771664, 1e-12)
         assert_near_equal(prob.get_val('fuselage_equivalent_diameter', units='m'), 0.16296522168199623, 1e-12)
         assert_near_equal(prob.get_val('fuselage_fineness_ratio'), 12.27255717114121, 1e-12)

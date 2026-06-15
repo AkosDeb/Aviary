@@ -1,5 +1,201 @@
 # SpaJeti v1.0.0 H-wing - Model Changelog
 
+## v1.16.0 - 2026-06-15
+
+**SpaJeti aero package split**
+
+- Added `aviary/subsystems/aerodynamics/SpaJeti_based/` for local
+  SpaJeti/Roskam/DATCOM-style aero modules.
+- Moved the local airfoil, lifting-surface, lift-curve-slope, parasite-drag,
+  Roskam induced-drag, lateral-stability, and support modules out of the
+  `flops_based` namespace.
+- Restored `flops_based/induced_drag.py` to the original FLOPS `InducedDrag`
+  component only; local `RoskamInducedDragComp` and
+  `FuselageLiftInducedDragComp` now live in `SpaJeti_based/induced_drag.py`.
+- Updated model and builder imports to use `SpaJeti_based` for local
+  implementations while retaining original FLOPS imports where intentionally
+  used.
+
+Versioning note:
+- This is a `MINOR` bump because it is an aero-module ownership/package
+  reorganization with no intended physics change.
+
+---
+
+## v1.15.2 - 2026-06-15
+
+**Fuselage base diameter output**
+
+- Added `fuselage_base_diameter` to `SuperellipseFuselageGeometry`:
+
+  `d_b = sqrt(4*S_b_fus/pi)`
+
+- Promoted and printed the value in the SpaJeti model alongside `S_b_fus`.
+
+Versioning note:
+- This is a `PATCH` bump because it adds a derived geometry output and diagnostics.
+
+---
+
+## v1.15.1 - 2026-06-15
+
+**Rounded-square fuselage geometry**
+
+- Changed the local `SuperellipseFuselageGeometry` path to use a rounded-square
+  cross-section: `max_width = max_height = 0.30 m`, with rounded edges from the
+  superellipse exponent `n = 4`.
+- The superellipse fuselage geometry is now driven by local fixed outputs
+  `fus_max_width` and `fus_max_height`, rather than the legacy CSV
+  `aircraft:fuselage:max_width/max_height` values.
+- Updated docs/tests to describe the local rounded-square convention instead of
+  saying the geometry must match the CSV dimensions.
+
+Versioning note:
+- This is a `PATCH` bump because it changes the local fuselage geometry
+  parameterization, not the architecture.
+
+---
+
+## v1.15.0 - 2026-06-15
+
+**Fuselage equivalent diameter bug fix + wing wetted area safeguard + CDi_fus table interpolation**
+
+### Bug fix — `FUSELAGE_EQUIV_DIAMETER_M`
+
+The constant was hardcoded as `0.169 m`, derived assuming a 15 cm square
+cross-section (`d = 0.15 × sqrt(4/π)`). The actual fuselage is a 30 cm × 25 cm
+superellipse (n = 4), giving a much larger max-section area.
+
+Corrected value:
+
+```
+A_max = superellipse_area(0.30, 0.25, 4.0) = 0.06953 m²
+FUSELAGE_EQUIV_DIAMETER_M = sqrt(4 × A_max / π) ≈ 0.2975 m
+```
+
+Same formula as `SuperellipseFuselageGeometry.compute()` so the K_wf fuselage
+correction factor and the post-run geometry report are now consistent.
+
+Effect on wing exposed wetted area at baseline:
+
+| | d_fus | s_buried | swet_wing |
+|-|-------|---------|----------|
+| Before fix | 0.169 m | 0.0264 m² | 0.8472 m² |
+| After fix  | 0.298 m | 0.0465 m² | 0.8070 m² |
+
+Impact: ~4.7% smaller wing Swet → slightly lower K_wf (fuselage enlargement effect
+on root chord buried fraction is larger, so slightly more of the planform is
+exposed), and correspondingly lower CD0_wing estimate.
+
+New module-level constants added:
+- `FUSELAGE_MAX_WIDTH_M = 0.30` (must match `aircraft:fuselage:max_width` in CSV)
+- `FUSELAGE_MAX_HEIGHT_M = 0.25` (must match `aircraft:fuselage:max_height` in CSV)
+
+### Runtime safeguard
+
+Added two assertions in `_print_parasite_drag()` immediately after computing
+`s_buried` and `swet_wing`. These raise `ValueError` with descriptive messages if:
+- `s_buried` is not in `(0, wing_area)` — fuselage buries whole wing or is zero
+- `swet_wing` is not in `(0, 2 × wing_area]` — physically impossible bounds
+
+### Unit tests
+
+New test module `aviary/models/aircraft/horizontal_small_uav/tests/test_wing_exposed_swet.py`
+(9 tests, no OpenMDAO required):
+
+- `TestFuselageEquivDiameter` — verifies `FUSELAGE_EQUIV_DIAMETER_M` matches
+  `superellipse_area` formula and is positive and within the bounding-rectangle
+  equivalent diameter
+- `TestWingExposedWettedArea` — verifies `s_buried > 0`, `s_buried < S_wing`,
+  `swet_wing > 0`, `swet_wing ≤ 2S_wing`, the `(S_planform − S_buried) × 2`
+  convention, and that the fuselage buries less than 50 % of the planform
+
+### `FuselageLiftInducedDragComp` — Roskam table interpolation
+
+`eta_finite_cylinder` and `crossflow_drag_coefficient` are no longer user-supplied
+scalar constants. Both are now interpolated from Roskam Part VI digitised tables
+inside `compute()`:
+
+**eta** (finite-cylinder interference factor) — Fig. 4.32
+
+| l/d  |  2   |  6   | 12   | 18   | 28   |
+|------|------|------|------|------|------|
+| eta  | 0.52 | 0.64 | 0.71 | 0.75 | 0.79 |
+
+**c_d_c** (crossflow drag coefficient) — Fig. 4.31
+
+| Mc = M·sin(α) | 0.00 | 0.25 | 0.40 | 0.50 | 0.70 |
+|----------------|------|------|------|------|------|
+| c_d_c          | 1.20 | 1.20 | 1.27 | 1.37 | 1.68 |
+
+Interpolation is linear (`numpy.interp`) and clamped to the table endpoints.
+Both computed values are now promoted as outputs (`eta_finite_cylinder`,
+`crossflow_drag_coefficient`) for post-run diagnostics.
+
+**New inputs:** `fuselage_fineness_ratio` (from `SuperellipseFuselageGeometry`),
+`Mach` (promoted from `design_mach` fixed output).
+**Removed inputs:** `eta_finite_cylinder`, `crossflow_drag_coefficient`.
+
+**SpaJeti design point** (l/d = 2.0/0.2975 ≈ 6.7, Mc = 0.477·sin(15°) ≈ 0.123):
+
+```
+eta   = interp(6.72,  [2,6,12,18,28],           [0.52,0.64,0.71,0.75,0.79]) = 0.648
+c_d_c = interp(0.123, [0,0.25,0.40,0.50,0.70],  [1.20,1.20,1.27,1.37,1.68]) = 1.20
+```
+
+(Old hardcoded values: eta=0.85, c_d_c=1.20. The planform term coefficient drops
+from 1.02 → 0.778, a 24 % reduction.)
+
+Versioning note:
+- `MINOR` bump folded into 1.15.0 because it replaces hardcoded placeholders with
+  real Roskam chart physics — this is a new formula implementation, not just a
+  parameter change.
+
+---
+
+## v1.14.0 - 2026-06-15
+
+**Aircraft 3-D visualizer from CSV config**
+
+- New file `aviary/visualization/plot_aircraft.py`: standalone matplotlib 3-D
+  visualizer that reads any Aviary CSV config directly (no OpenMDAO run needed).
+- Draws fuselage, wing, h-tail, v-tail, and engine nacelles.
+- **Fuselage uses `SuperellipseFuselageGeometry` shape model** — same smoothstep
+  nose/aft profile, superellipse cross-section exponent, and `base_width/height_fraction`
+  as the drag/CDi_fus build-up, so the visualizer matches the physical model.
+- Superellipse parameters (`nose_frac`, `tail_frac`, `base_w_frac`, `base_h_frac`,
+  `exponent`) are kwargs to `visualize()` with defaults matching the SpaJeti baseline;
+  also exposed as CLI flags `--nose-frac`, `--tail-frac`, `--base-w-frac`,
+  `--base-h-frac`, `--exponent`.
+- All CSV units converted to metres internally (handles ft/m configs).
+- Wing root chord derived via `c_root = 2S / (b(1+λ))`, consistent with
+  `MACGeometryComp`.
+- New `aviary/visualization/README_plot_aircraft.md`: usage, variables table,
+  fuselage shape model, parameter table, UAV numerical example.
+
+Usage:
+
+```bash
+python -m aviary.visualization.plot_aircraft aviary/models/aircraft/small_uav/small_uav.csv
+```
+
+```python
+from aviary.visualization.plot_aircraft import visualize
+visualize('aviary/models/aircraft/small_uav/small_uav.csv',
+          nose_frac=0.20, tail_frac=0.35, base_w_frac=0.20, base_h_frac=0.20, exponent=4.0)
+```
+
+Verified on all three UAV configs:
+- `small_uav.csv` — 2 m fuselage, 1.8 m span
+- `pareto_front_uav.csv`
+- `horizontal_small_uav.csv`
+
+Versioning note:
+- This is a `MINOR` bump because it adds a new tool that will be used alongside
+  every design iteration.
+
+---
+
 ## v1.13.0 - 2026-06-10
 
 **CDi wired into FLOPS mission polar via span efficiency correction**

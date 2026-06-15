@@ -272,7 +272,7 @@ CL_alpha = 0.999 * 5.22 = 5.21 /rad   (code gives 5.206 /rad)
 ## Wiring example
 
 ```python
-from aviary.subsystems.aerodynamics.flops_based.lift_curve_slope import (
+from aviary.subsystems.aerodynamics.SpaJeti_based.lift_curve_slope import (
     ScholzWingletARCorrection, LiftCurveSlopePolhamus,
 )
 

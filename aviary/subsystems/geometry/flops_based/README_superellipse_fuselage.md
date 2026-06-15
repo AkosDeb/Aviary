@@ -54,6 +54,7 @@ Outputs:
 |--------|-------|--------------|
 | `fuselage_planform_area` | m^2 | Roskam `S_plf_fus` candidate for fuselage drag due to lift |
 | `fuselage_base_area` | m^2 | Roskam `S_b_fus` candidate |
+| `fuselage_base_diameter` | m | `sqrt(4*S_b_fus/pi)` |
 | `fuselage_wetted_area` | m^2 | Parasite drag wetted area, excluding base cap |
 | `fuselage_equivalent_diameter` | m | Diameter of circle with same max cross-section area |
 | `fuselage_fineness_ratio` | unitless | `length / equivalent_diameter` |
@@ -61,14 +62,14 @@ Outputs:
 | `fuselage_volume` | m^3 | Integrated volume |
 | `fuselage_centroid_x` | m | Geometric volume centroid from nose |
 
-## Current Baseline
+## Current SpaJeti Baseline
 
 With:
 
 ```text
 length = 2.0 m
-max_width = 0.15 m
-max_height = 0.15 m
+max_width = 0.30 m
+max_height = 0.30 m
 nose_fraction = 0.20
 tail_fraction = 0.35
 base_width_fraction = 0.20
@@ -80,13 +81,17 @@ the component gives approximately:
 
 | Output | Value |
 |--------|-------|
-| `S_plf_fus` | `0.2280 m^2` |
-| `S_b_fus` | `8.343e-4 m^2` |
-| `S_wet_fus` | `0.8034 m^2` |
-| equivalent diameter | `0.1630 m` |
-| fineness ratio | `12.27` |
-| volume | `0.02826 m^3` |
+| `S_plf_fus` | `0.4560 m^2` |
+| `S_b_fus` | `3.337e-3 m^2` |
+| base diameter `d_b` | `0.0652 m` |
+| `S_wet_fus` | `1.6271 m^2` |
+| equivalent diameter | `0.3259 m` |
+| fineness ratio | `6.14` |
+| volume | `0.11305 m^3` |
 | centroid x | `0.9367 m` |
+
+This is a rounded-square cross-section: `max_width = max_height`, with rounded
+edges controlled by `superellipse_exponent = 4`.
 
 ## Next Integration Steps
 
