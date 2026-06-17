@@ -1,4 +1,4 @@
-"""Terminal reporting utilities for the horizontal small UAV example."""
+"""Terminal reporting utilities for aircraft examples."""
 
 import numpy as np
 
@@ -7,15 +7,31 @@ from aviary.models.external_subsystems.aeroelasticity.variables import Aeroelast
 from aviary.subsystems.propulsion.small_turbojet import SmallTurbojetVariables
 from aviary.utils.print_utils import safe_get, print_result, print_scientific_result
 
-try:
-    from .horizontal_small_uav_config import *
-    from .phase_info import MAX_TAKEOFF_MASS_KG, DASH_MACH
-except ImportError:
-    from horizontal_small_uav_config import *
-    from phase_info import MAX_TAKEOFF_MASS_KG, DASH_MACH
+_CONTEXT_READY = False
 
-MACH_UPPER_BOUND = DASH_MACH + M_CRIT_SAFETY_MARGIN
-AERO_REQUIRED_SPEED_MS = DIVE_SPEED_FACTOR * 550.0 / 3.6
+
+def configure_print_context(config_module, phase_module):
+    """Load aircraft-specific constants used by the print helpers."""
+    global _CONTEXT_READY, MAX_TAKEOFF_MASS_KG, DASH_MACH
+    global MACH_UPPER_BOUND, AERO_REQUIRED_SPEED_MS
+
+    for name in dir(config_module):
+        if name.isupper():
+            globals()[name] = getattr(config_module, name)
+
+    MAX_TAKEOFF_MASS_KG = phase_module.MAX_TAKEOFF_MASS_KG
+    DASH_MACH = phase_module.DASH_MACH
+    MACH_UPPER_BOUND = DASH_MACH + M_CRIT_SAFETY_MARGIN
+    AERO_REQUIRED_SPEED_MS = DIVE_SPEED_FACTOR * 550.0 / 3.6
+    _CONTEXT_READY = True
+
+
+def _require_context():
+    if not _CONTEXT_READY:
+        raise RuntimeError(
+            'printing_utils.configure_print_context(config_module, phase_module) '
+            'must be called before using aircraft-specific print helpers.'
+        )
 
 
 def premission_propulsion_var(name):
@@ -490,6 +506,7 @@ def print_parasite_drag_detail(prob):
 
 
 def print_run_header(MODEL_VERSION, OPTIMIZER):
+    _require_context()
     print('\n' + '=' * 70)
     print('HORIZONTAL-TAIL SMALL UAV RANGE OPTIMIZATION')
     print(f'  Version         : v{MODEL_VERSION}  (SpaJeti v1.0.0 H-wing)')
@@ -511,6 +528,7 @@ def print_optimization_summary(
     MODEL_VERSION,
     OUTPUT_DIR,
 ):
+    _require_context()
     print('\n' + '=' * 70)
     print('OPTIMIZATION RESULTS')
     print(f'  Model version : v{MODEL_VERSION}  (SpaJeti v1.0.0 H-wing)')

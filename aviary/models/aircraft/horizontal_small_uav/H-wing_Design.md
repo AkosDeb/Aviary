@@ -62,7 +62,7 @@ Design thought about each requirements
     -  The tails needs to be passive surfaces and the sizing if fully driven to achieve the required stability values with the effects of destabilizing H-wing
 
 
-
+Currently untrimmed with trimmed case I estimate around 25-30% loss in Side Force/lift compared to untrimmed case (conservative estimate)
 
 Aeroelasticity
 for aeroeaslticity the bet is when the vtp cg is on top of he aeroelastic center of the wing

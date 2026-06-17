@@ -16,30 +16,29 @@ os.environ.setdefault('OPENMDAO_USE_MPI', '0')
 import aviary.api as av
 
 try:
+    from . import horizontal_small_uav_config as report_config
+    from . import phase_info as report_phase_info
     from .phase_info import MAX_TAKEOFF_MASS_KG, DASH_MACH, phase_info
 except ImportError:
+    import horizontal_small_uav_config as report_config
+    import phase_info as report_phase_info
     from phase_info import MAX_TAKEOFF_MASS_KG, DASH_MACH, phase_info
 
+from aviary.models.aircraft.reporting.dashboard_reports import (
+    configure_dashboard_context,
+    write_payload_range_report,
+    write_spajeti_aircraft_3d_report,
+)
+from aviary.models.aircraft.reporting.printing_utils import (
+    configure_print_context,
+    print_optimization_summary,
+    print_run_header,
+)
+
 try:
-    from .dashboard_reports import (
-        write_payload_range_report,
-        write_spajeti_aircraft_3d_report,
-    )
     from .optimization_setup import OPTIMIZER, configure_optimization
-    from .printing_utils import (
-        print_optimization_summary,
-        print_run_header,
-    )
 except ImportError:
-    from dashboard_reports import (
-        write_payload_range_report,
-        write_spajeti_aircraft_3d_report,
-    )
     from optimization_setup import OPTIMIZER, configure_optimization
-    from printing_utils import (
-        print_optimization_summary,
-        print_run_header,
-    )
 
 from aviary.subsystems.propulsion.small_turbojet import (
     SmallTurbojetModel,
@@ -69,6 +68,9 @@ try:
     from .horizontal_small_uav_config import *
 except ImportError:
     from horizontal_small_uav_config import *
+
+configure_print_context(report_config, report_phase_info)
+configure_dashboard_context(report_config)
 
 # (Fuselage eta and c_d_c are now interpolated inside FuselageLiftInducedDragComp
 #  from the Roskam Part VI lookup tables â€” no module-level constants needed.)

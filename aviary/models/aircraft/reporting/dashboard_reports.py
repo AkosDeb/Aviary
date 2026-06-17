@@ -1,4 +1,4 @@
-"""Dashboard and HTML report generation for the horizontal small UAV case."""
+"""Dashboard and HTML report generation helpers for aircraft examples."""
 
 import csv
 import math
@@ -14,16 +14,31 @@ from aviary.subsystems.geometry.flops_based.superellipse_fuselage import (
 from aviary.subsystems.propulsion.small_turbojet import SmallTurbojetVariables
 from aviary.utils.print_utils import safe_get
 
-try:
-    from .horizontal_small_uav_config import *
-except ImportError:
-    from horizontal_small_uav_config import *
+_CONTEXT_READY = False
+
+
+def configure_dashboard_context(config_module):
+    """Load aircraft-specific constants used by the dashboard report writers."""
+    global _CONTEXT_READY
+    for name in dir(config_module):
+        if name.isupper():
+            globals()[name] = getattr(config_module, name)
+    _CONTEXT_READY = True
+
+
+def _require_context():
+    if not _CONTEXT_READY:
+        raise RuntimeError(
+            'dashboard_reports.configure_dashboard_context(config_module) must '
+            'be called before writing aircraft-specific dashboard reports.'
+        )
 
 
 def premission_propulsion_var(name):
     return f'pre_mission.propulsion.{name}'
 
 def write_payload_range_report(prob):
+    _require_context()
     reports_dir = Path(prob.get_reports_dir(force=True))
     csv_path = reports_dir / 'payload_range_data.csv'
 
@@ -67,6 +82,7 @@ def write_payload_range_report(prob):
 
 def write_spajeti_aircraft_3d_report(prob):
     """Write a lightweight SpaJeti-specific 3D geometry report for the dashboard."""
+    _require_context()
     reports_dir = Path(prob.get_reports_dir(force=True))
     html_path = reports_dir / 'spajeti_aircraft_3d.html'
     subsystems_dir = reports_dir / 'subsystems'

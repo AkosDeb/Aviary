@@ -2,6 +2,11 @@
 
 ## v1.33.0 — 2026-06-17 — VTP structural mass estimation and propulsion CG wiring
 
+Reporting/organization cleanup:
+- Moved reusable terminal reporting into `aviary/models/aircraft/reporting/printing_utils.py`.
+- Moved reusable dashboard/HTML report generation into `aviary/models/aircraft/reporting/dashboard_reports.py`.
+- Reporting modules now receive aircraft-specific constants through explicit context setup instead of importing the horizontal-small-UAV config directly.
+
 New components in `aviary/subsystems/mass/spajeti_based/`:
 
 - **`VTPStructuralMass`** — geometry-based VTP mass consistent with `VTPTipInertia`.

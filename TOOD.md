@@ -801,6 +801,21 @@ Remaining gaps:
   `GJ`, divergence, and flutter response as `wing_section_tc` moves during
   optimization.
 
+- **[TODO] Cross-module VTP mass/inertia consistency** — `VTPStructuralMass`
+  (spajeti_based) and `VTPTipInertia` (aeroelasticity module) are both driven by
+  the same geometry variables but live in separate, sibling subsystems. Verify:
+  - Both use the same inputs: `Aircraft.VerticalTail.SPAN/ROOT_CHORD/TAPER_RATIO`,
+    `AE.VTP_AREAL_DENSITY`, `AE.VTP_TIP_PANEL_COUNT`.
+  - `VTPStructuralMass.vtp_structural_mass / num_wing_tips` ≈ `VTPTipInertia.vtp_tip_mass`
+    (single-tip mass should agree within the trapezoid vs. solid-area formula
+    difference; any divergence > 5% indicates a definition mismatch).
+  - At the optimized geometry, `vtp_structural_mass` flows into `SpaJetiCGEstimator`
+    AND the same geometry flows into `VTPTipInertia` → `SpanwiseMassDistribution`
+    → beam modal solver.  There is no explicit connect between the two subsystem
+    groups; they share promoted variable names at model scope.  Add an end-to-end
+    regression test that checks both outputs move identically when
+    `VerticalTail.SPAN` changes.
+
 ---
 
 ## Aeroelasticity improvement roadmap <span style="color: #22c55e; font-weight: bold">[STEP 3 DONE - spanwise equivalent active]</span> - custom pre-NASTRAN H-wing flutter path
@@ -979,9 +994,39 @@ Calibration decisions intentionally deferred to Step 5:
   `CONTROL_HINGE_FRACTION` added as a new input (default 0.75 = 75% chord).
   All 11 unit tests pass.
 
-- DEFERRED: Add VTP aerodynamic strips — needs sign convention verification
-  (VTP panels are on the beam tip; their lift adds to tip torsion and changes
-  the coupling sign vs. a conventional winglet).
+- **[TODO] Verify control surface unsteady GAF completeness** — Garrick T-functions
+  were implemented in v1.30.0 for the δ column. Check that:
+  - η_δ = T11/(2·T10) is numerically correct at `CONTROL_HINGE_FRACTION = 0.75`
+    (expected T10 ≈ 0.203, T11 ≈ −0.193, η_δ ≈ −0.475 per Theodorsen 1935 Table I).
+  - The δ row (ch_δ, cm_δ) is consistently unsteady — not a mix of quasi-steady
+    row with unsteady column.
+  - k → 0 limit recovers the exact Garrick quasi-steady result (compare against
+    the pre-v1.30.0 baseline at a reference design point).
+  - At design k the control mode adds positive damping (phase of the coupling
+    terms has the correct sign to delay flutter vs. the 2-DOF case).
+
+- **[TODO] Include VTP aerodynamic contributions in beam-modal flutter** —
+  currently the VTP contributes mass/inertia via `VTPTipInertia` →
+  `SpanwiseMassDistribution` but provides no aerodynamic strips. Including VTP
+  aero would change tip coupling terms and likely raise the predicted flutter speed.
+  Approach options (pick one and prototype):
+  1. **VTP sideforce → torsion coupling**: VTP sideforce moment about the wing
+     elastic axis is `ΔM_z = F_vtp × (z_vtp − z_EA)`.  Non-zero for an H-wing
+     with vertical separation between VTP CP and wing EA.  Use VTP CL_alpha
+     (Polhamus with k_WL endplate correction) and the same Theodorsen C(k)
+     unsteady scaling as the main wing.  Requires sign-convention verification:
+     for a plunge perturbation `h`, VTP generates side-force, not vertical lift —
+     coupling into torsion only if z_EA ≠ z_vtp.
+  2. **Thin-strip at wing-tip station**: treat each VTP panel as a local
+     Theodorsen strip at `y = ±b/2`, add to the GAF at the tip node.
+     Complication: VTP strips are orthogonal to the main wing — project the
+     force component into bending/torsion before assembling into GAF.
+  3. **Effective tip chord**: represent the VTP as an augmented wing-tip chord
+     (increased local AR correction), effectively raising the tip CL_alpha and
+     therefore the torsional moment.  Simplest to implement; loses the
+     phase information from VTP unsteady motion.
+  Prerequisite: decide which coupling is dominant (likely option 1 or 3).
+  Add a unit test comparing VTP-on vs. VTP-off flutter speed at baseline geometry.
 
 - Keep NASTRAN as the later high-fidelity validation path.
 
@@ -1095,3 +1140,137 @@ Remaining steps:
 5. **[TODO] Wire to CG estimation loop** — `aircraft_x_cg` from `SpaJetiCGEstimator`
    should replace the fixed CG station in `build_cg_estimator()` (legacy `CGEstimatorGroup`).
    Prerequisite: static margin constraint (see Cm_alpha TODO).
+
+---
+
+## Verification and calibration <span style="color: #ef4444; font-weight: bold">[TODO — all items open]</span>
+
+### Double-check mass module (spajeti_based/)
+
+New mass module implemented in v1.31.0–v1.33.0; smoke-tested only. Before trusting
+optimizer gradients through this path:
+
+- **[TODO] CG value smoke-test** — run `SpaJetiMassGroup` in isolation at the
+  CSV-baseline geometry and compare `aircraft_x_cg` against a hand-calculated CG
+  from the known point-mass positions (expected ≈ −0.88 m, x-forward frame).
+  Flag any result outside ±3% as a formula error.
+
+- **[TODO] Coordinate-frame audit** — every component in `spajeti_based/` uses
+  x-positive-FORWARD; the run script passes `wing_x_apex_fwd = -wing_x_apex`.
+  Verify:
+  - All x_cg outputs are negative (aft of nose is negative in the FORWARD frame).
+  - `engine_x = -(fuselage_length × engine_station_fraction)` (aft pusher).
+  - `vtp_x_cg` is more negative than `wing_x_apex` (VTP is aft of wing root LE).
+
+- **[TODO] VTP CG formula check** — in `VTPStructuralMass.compute()` verify:
+  - `wing_tip_le_x = wing_x_apex − 0.5 × wing_span × tan(sweep_rad)`.
+  - `vtp_mac = root_chord × (2/3) × (1 + taper + taper²) / (1 + taper)`.
+  - Rigid translation test: shift `wing_x_apex` by +0.1 m, expect `vtp_x_cg`
+    to shift by exactly +0.1 m (no span geometry changes, just translation).
+
+- **[TODO] Default value sanity** — at baseline geometry confirm:
+  - `wing_structural_mass` ≈ 1.80 kg, `fuselage_structural_mass` ≈ 2.16 kg,
+    `vtp_structural_mass` ≈ 0.30 kg, `aircraft_empty_mass` ≈ 5.3–5.6 kg.
+
+- **[TODO] Partial derivative check** — run `prob.check_partials()` on
+  `VTPStructuralMass`, `PropulsionLocationComp`, and `SpaJetiCGEstimator`.
+  All declare `method='cs'`; all must pass with relative error < 1e-5.
+
+### Double-check aeroelasticity module
+
+Specific items to audit before the optimized result is trusted:
+
+- **[TODO] P-K convergence flag** — confirm `BEAM_MODAL_3DOF_PK_CONVERGED = 1`
+  at the optimizer solution. If it is 0 the flutter speed is the fallback
+  upper-bound and the constraint is effectively inactive. Add a post-run warning
+  if convergence flag is 0 at final design.
+
+- **[TODO] Beam modal frequency plausibility** — at baseline geometry, print
+  `BEAM_MODAL_BENDING_FREQUENCY`, `BEAM_MODAL_TORSION_FREQUENCY`, and
+  `BEAM_MODAL_CONTROL_FREQUENCY`. Expected for a 1.8 m UAV wing:
+  bending 4–10 Hz, torsion 10–20 Hz. If torsion < bending the mode ordering is
+  wrong — indicates a stiffness or mass input error.
+
+- **[TODO] GAF diagonal sign check** — in `BeamModalFlutter.compute()` the
+  diagonal of the 3×3 Theodorsen GAF (L_hh, M_αα, C_δδ) must be negative-real
+  at k > 0 under the standard sign convention. Print the full complex GAF matrix
+  at design k for manual inspection.
+
+- **[TODO] Spar fraction defaults** — confirm `FRONT_SPAR_FRACTION = 0.15` and
+  `REAR_SPAR_FRACTION = 0.55` match the physical wing layout. Elastic axis must
+  satisfy `ELASTIC_AXIS_FRACTION ∈ (0.15, 0.55)`.
+
+- **[TODO] VTPTipInertia output range** — at `VerticalTail.SPAN ∈ [0.15, 0.60] m`,
+  print `vtp_tip_mass` and `vtp_tip_pitch_inertia` at both bounds. Flutter speed
+  should decrease monotonically with increasing VTP mass (heavier tip lowers
+  flutter). Verify the sensitivity is physically reasonable.
+
+- **[TODO] η_δ numerical value** — at `CONTROL_HINGE_FRACTION = 0.75` compute
+  T10, T11 analytically (Theodorsen 1935 Table I) and compare with
+  `_garrick_T10_T11(0.75)` in `beam_modal_flutter.py`. Expected: T10 ≈ 0.203,
+  T11 ≈ −0.193, η_δ ≈ −0.475. A sign error in η_δ flips the control coupling
+  phase and gives an unconservative flutter prediction.
+
+### Calibration for the aeroelastic model
+
+The 3-DOF beam-modal P-K model has not yet been calibrated against reference data.
+
+- **[TODO] AVL/XFLR5 divergence cross-check** — run AVL or XFLR5 at baseline
+  geometry; extract wing-only divergence speed. Compare against
+  `DIVERGENCE_SPEED` from `StaticAeroelastic`. Target: < 15% deviation.
+  Larger deviation indicates the strip-theory GJ or EI formula needs a
+  correction factor.
+
+- **[TODO] t/c sensitivity sweep** — vary `wing_section_tc` from 0.05 to 0.18
+  in steps of 0.01. Record `BEAM_MODAL_BENDING_FREQUENCY` and
+  `BEAM_MODAL_3DOF_PK_FLUTTER_SPEED` at each step. Flutter speed should
+  increase monotonically with t/c (thicker → stiffer). Non-monotonic response
+  indicates an error in the GJ/EI approximation in `TorsionalStiffnessComp`.
+
+- **[TODO] 2-DOF vs. 3-DOF comparison** — run the baseline with
+  `CONTROL_STIFFNESS` set very high (effectively rigid surface) and compare the
+  3-DOF flutter speed against the 2-DOF legacy result. They should agree within
+  numerical noise; any divergence > 1% indicates a matrix assembly error in the
+  3-DOF upgrade.
+
+- **[TODO] VTP mass-off baseline** — disable `VTPTipInertia` (zero `vtp_tip_mass`
+  and `vtp_tip_pitch_inertia`) and record the flutter speed change. VTP tip mass
+  should lower flutter speed; confirm sign. Document the delta to quantify the
+  improvement from v1.28.0.
+
+### Gradient robustness
+
+The optimizer uses SLSQP with analytic derivatives from OpenMDAO CS partials.
+
+- **[TODO] Long optimization runtime investigation** — the v1.33.0 full optimization
+  reached IPOPT but hit a 20-minute command timeout. The setup spent about
+  **601 s computing total-derivative sparsity/coloring** before IPOPT began, then
+  only reached iteration 2 before the timeout. Investigate:
+  - Whether dynamic coloring is being recomputed every run and should be cached.
+  - Whether total derivative coloring tolerance/settings are too expensive.
+  - Which subsystem dominates derivative cost (`AeroelasticityGroup`,
+    `SpaJetiMassGroup`, mission phases, or dashboard/recorder hooks).
+  - Whether a cheaper validation mode is needed: no optimization, no dashboard,
+    fixed coloring, or reduced phase transcription.
+  - Whether any CS partials or solver groups force dense/slow total derivatives.
+
+- **[TODO] check_totals() at baseline** — call `prob.check_totals(method='cs',
+  compact_print=True)` after a single-point solve (no optimization). All
+  constraint/objective total derivatives must have relative error < 1e-4. Focus on:
+  - `BEAM_MODAL_3DOF_PK_FLUTTER_SPEED_MARGIN` w.r.t. `Aircraft.Wing.SPAN` and
+    `wing_section_tc` (drive the active flutter constraint gradient).
+  - `structural_empty_mass` w.r.t. `Aircraft.Wing.SPAN` (mass–span coupling).
+  - `vtp_structural_mass` w.r.t. `Aircraft.VerticalTail.SPAN`.
+
+- **[TODO] Bounds sensitivity** — repeat `check_totals()` with DVs at lower
+  bounds and upper bounds separately. A relative error jump > 10× vs. the
+  interior baseline indicates a near-discontinuity in a compute method.
+
+- **[TODO] P-K solver differentiability** — confirm the P-K eigenvalue iteration
+  in `BeamModalFlutter` has no floor/ceil/abs operations without CS-safe wrappers.
+  Any such operation returns zero derivative under complex step. Add
+  `np.where(condition, cs_safe_true, cs_safe_false)` guards where needed.
+
+- **[TODO] NaN/Inf guard** — after the first optimization iteration, scan all
+  component outputs for NaN or Inf. Run `prob.check_partials(compact_print=False)`
+  to surface any component returning NaN during the complex-step perturbation.
