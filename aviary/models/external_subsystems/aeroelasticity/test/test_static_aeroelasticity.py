@@ -23,7 +23,7 @@ class TestWingboxStructuralEstimate(unittest.TestCase):
         prob.set_val(f'box.{Aircraft.Wing.AREA}', 0.8, units='m**2')
         prob.set_val(f'box.{Aircraft.Wing.SPAN}', 2.0, units='m')
         prob.set_val(f'box.{Aircraft.Wing.TAPER_RATIO}', 1.0)
-        prob.set_val(f'box.{Aircraft.Wing.THICKNESS_TO_CHORD}', 0.12)
+        prob.set_val(f'box.{AE.STRUCTURAL_THICKNESS_TO_CHORD}', 0.12)
         prob.run_model()
 
         assert_near_equal(prob.get_val(f'box.{AE.ELASTIC_AXIS_FRACTION}'), 0.375)

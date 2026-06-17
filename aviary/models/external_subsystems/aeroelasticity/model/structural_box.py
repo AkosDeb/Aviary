@@ -17,19 +17,19 @@ class WingboxStructuralEstimate(om.ExplicitComponent):
         self.add_input(Aircraft.Wing.AREA, val=1.0, units='m**2')
         self.add_input(Aircraft.Wing.SPAN, val=2.0, units='m')
         self.add_input(Aircraft.Wing.TAPER_RATIO, val=1.0)
-        self.add_input(Aircraft.Wing.THICKNESS_TO_CHORD, val=0.12)
+        self.add_input(AE.STRUCTURAL_THICKNESS_TO_CHORD, val=0.12, units='unitless')
 
-        self.add_input(AE.FRONT_SPAR_FRACTION, val=0.15)
-        self.add_input(AE.REAR_SPAR_FRACTION, val=0.60)
-        self.add_input(AE.AERODYNAMIC_CENTER_FRACTION, val=0.25)
-        self.add_input(AE.CONTROL_CHORD_FRACTION, val=0.25)
+        self.add_input(AE.FRONT_SPAR_FRACTION, val=0.15, units='unitless')
+        self.add_input(AE.REAR_SPAR_FRACTION, val=0.60, units='unitless')
+        self.add_input(AE.AERODYNAMIC_CENTER_FRACTION, val=0.25, units='unitless')
+        self.add_input(AE.CONTROL_CHORD_FRACTION, val=0.25, units='unitless')
         self.add_input(AE.SKIN_THICKNESS, val=0.0015, units='m')
         self.add_input(AE.SPAR_THICKNESS, val=0.0015, units='m')
-        self.add_input(AE.BOX_HEIGHT_FRACTION, val=0.80)
+        self.add_input(AE.BOX_HEIGHT_FRACTION, val=0.80, units='unitless')
         self.add_input(AE.YOUNGS_MODULUS, val=70.0e9, units='Pa')
         self.add_input(AE.SHEAR_MODULUS, val=27.0e9, units='Pa')
         self.add_input(AE.MATERIAL_DENSITY, val=2700.0, units='kg/m**3')
-        self.add_input(AE.CONTROL_CG_FROM_HINGE_FRACTION, val=0.5)
+        self.add_input(AE.CONTROL_CG_FROM_HINGE_FRACTION, val=0.5, units='unitless')
 
         self.add_output(AE.ELASTIC_AXIS_FRACTION, val=0.375)
         self.add_output(AE.AERO_CENTER_TO_EA_FRACTION, val=0.125)
@@ -54,7 +54,7 @@ class WingboxStructuralEstimate(om.ExplicitComponent):
         area = inputs[Aircraft.Wing.AREA]
         span = inputs[Aircraft.Wing.SPAN]
         taper = inputs[Aircraft.Wing.TAPER_RATIO]
-        tc = inputs[Aircraft.Wing.THICKNESS_TO_CHORD]
+        tc = inputs[AE.STRUCTURAL_THICKNESS_TO_CHORD]
 
         front_spar = inputs[AE.FRONT_SPAR_FRACTION]
         rear_spar = inputs[AE.REAR_SPAR_FRACTION]

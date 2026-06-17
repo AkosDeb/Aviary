@@ -1,144 +1,218 @@
-# Preliminary Aeroelasticity External Subsystem
+# SpaJeti Aeroelasticity External Subsystem
 
-Preliminary aeroelastic constraints for gradient-based MDO with Aviary. All
-components are OpenMDAO `ExplicitComponent` with analytical (CS) or finite-difference
-partials, so they can be dropped directly into a DYMOS/OpenMDAO optimisation loop.
+This folder contains the custom pre-NASTRAN aeroelasticity model used by the
+horizontal small UAV case. The goal is to keep the model cheap enough for
+gradient-based OpenMDAO/Aviary optimization while moving away from pure scalar
+rules of thumb toward spanwise loads, spanwise structure, and modal flutter
+screening.
 
----
+The subsystem is implemented as OpenMDAO components and is wired by
+`aeroelasticity_builder.py`.
 
-## What it computes
+## Current Status
 
-### Wing structure — `WingboxStructuralEstimate`
-Thin-walled closed rectangular wingbox from wing geometry alone.
+The model can currently:
 
-| Output | Description |
-|--------|-------------|
-| Bending stiffness EI | Euler-Bernoulli, skin + spar flanges |
-| Torsional rigidity GJ | Bredt-Batho single-cell |
-| Plunge spring constant k_h | 3EI/L³ cantilever tip |
-| Torsional spring constant k_α | GJ/L cantilever |
-| Elastic-axis fraction | Mid-point of front and rear spar |
-| AC-to-EA fraction | Elastic axis − aerodynamic centre (0.25c) |
-| Control hinge fraction | 1 − control chord fraction |
-| Mass per unit span | Two-skin thin-wall (skin + spar webs) |
-| Pitch inertia per unit span | 2·m_skin·(w²/12 + (h/2)²) + 2·m_spar·((w/2)² + h²/12) |
-| Control inertia per unit span | ¼ m (control_radius)² |
-| **Control static unbalance** | density × 8 × skin_t × cg_frac × r² (two-skin estimate) |
+- estimate wingbox geometry, elastic-axis location, and control-surface
+  bookkeeping from planform and spar fractions;
+- build spanwise wingbox stiffness and mass arrays;
+- compute a Schrenk spanwise lift distribution;
+- integrate spanwise shear, bending moment, torque, deflection, and twist;
+- add distributed and concentrated mass effects from structure, VTPs, engine,
+  fuel, servo, and elevon assumptions;
+- compute geometry-derived H-wing VTP tip mass and pitch inertia for the
+  upper/lower endplate pair on each wingtip;
+- reduce the spanwise beam back to equivalent scalar properties for the older
+  active constraints;
+- run scalar divergence, reversal, quasi-steady flutter, and P-K flutter
+  screens;
+- run a first beam-modal flutter screen using one finite-element bending mode
+  and one finite-element torsion mode;
+- run a reduced-frequency Theodorsen P-K iteration on those beam modes.
 
----
+The model cannot yet:
 
-### Static aeroelasticity — `StaticAeroelastic`
-Strip-theory lumped model, one representative section at the MAC.
+- replace NASTRAN-level shell/beam finite-element validation;
+- compute aerodynamic loads from VLM, DLM, CFD, or AVL directly;
+- model unsteady generalized aerodynamic forces for the spanwise modal model;
+- include VTP aerodynamic strips in the modal flutter screen;
+- handle detailed control-surface freeplay, hinge compliance, or servo dynamics;
+- certify flutter margins. Treat the results as optimization guidance and
+  screening only.
 
-| Output | Formula | Constraint |
-|--------|---------|-----------|
-| Divergence dynamic pressure | k_α / (e·c·Clα·L) | q_div > q_required |
-| Divergence speed | √(2 q_div / ρ) | V_div > V_required |
-| **Divergence speed margin** | V_div − V_required | ≥ 0 |
-| Reversal dynamic pressure | −k_α Clδ / (c·Cmδ·Clα·L) | q_rev > q_required |
-| Reversal speed | √(2 q_rev / ρ) | V_rev > V_required |
-| **Reversal speed margin** | V_rev − V_required | ≥ 0 |
-| Control effectiveness η | (1 − q/q_rev) / (1 − q/q_div) | η > 0 |
+## Step 3 Versus Step 4
 
-`q_required` = dynamic pressure at `REQUIRED_SPEED` (typically V_design × 1.15).
+Step 3 is the spanwise beam data model. It creates the arrays that describe the
+wing along the semispan:
 
----
+- station locations;
+- local chord;
+- local wingbox width and height;
+- local `EI` and `GJ`;
+- Schrenk lift, shear, bending moment, and torque;
+- spanwise mass and pitch inertia;
+- static deflection and twist.
 
-### Quasi-steady flutter screen — `QuasiSteadyFlutterScreen`
-3-DOF lumped model: wing plunge (h), wing torsion (α), full-span control rotation (δ).
+Step 4 is the modal aeroelastic model. It consumes the Step 3 arrays, solves
+finite-element bending and torsion mode shapes, projects the structure into
+modal coordinates, and evaluates two two-mode aeroelastic stability screens:
+a quasi-steady state-space screen and a reduced-frequency Theodorsen P-K screen.
 
-**Mass matrix** includes:
-- Structural mass per span + VTP tip mass (H-wing configuration)
-- Pitch static unbalance S_α
-- Control static unbalance S_δ (from structural estimate, or provided directly)
+The Step 4 screen is implemented, but it is still a reporting/calibration tool.
+The active optimizer constraints still use the scalar divergence and scalar
+quasi-steady flutter checks until the beam-modal method is calibrated.
 
-**Aerodynamic model** — quasi-steady p-k:
-- Stiffness terms: q × aero_matrix (from Clα, Cmα_EA, Chα and control derivatives)
-- Velocity damping terms: 0.5 ρ V × aero_vel (from plunge-rate apparent AoA)
-- cm_alpha is internally converted from AC convention to EA convention:
-  `cm_alpha_EA = cl_alpha × e_frac + cm_alpha_AC`
+## Signal Flow
 
-| Output | Description |
-|--------|-------------|
-| Flutter speed | Bisection on max real part of state-matrix eigenvalues |
-| Flutter dynamic pressure | 0.5 ρ V_f² |
-| Flutter margin | V_f/V_design − 1 |
-| **Flutter speed margin** | V_f − V_required |
-| Max real eigenvalue at design | Smooth CS-differentiable stability metric for optimisation |
+```text
+MaterialSelector
+  -> material density and allowables
 
-`MAX_REAL_EIGENVALUE_AT_DESIGN < 0` is the recommended optimisation constraint
-(has exact CS derivatives). Flutter speed uses bisection so its CS gradient is zero;
-use finite-difference if the flutter speed itself is the active constraint.
-
----
-
-### P-K flutter analysis — `PKFlutterAnalysis`
-Full reduced-frequency P-K iteration over a speed sweep. Same structural model as
-`QuasiSteadyFlutterScreen`; the aerodynamic model is frequency-dependent.
-
-**Aerodynamic model** — Theodorsen thin-airfoil strip theory (`theodorsen_strip_gaf`):
-- `C(k) = H₁⁽²⁾(k) / (H₀⁽²⁾(k) + H₁⁽²⁾(k))` via `scipy.special.hankel2`
-- Column h: `C(k)·(ik/b)` → aerodynamic damping from plunge rate (F-term) plus
-  pseudo-stiffness shift (G-term)
-- Column α: `C(k)·[1 + ik·(1/2−a)]` → circulatory stiffness + pitch-rate damping;
-  `a = 2·ea_frac − 1` is the elastic-axis position from midchord
-- Column δ: quasi-steady (Theodorsen-Garrick T-functions are the next upgrade)
-- k=0 limit equals the quasi-steady aero matrix; k→∞ gives 50% circulatory lift
-- **Swap point**: pass a custom `gaf_function` to `pk_modes_at_speed()` for
-  DLM/AVL-derived matrices without changing any other code
-
-**P-K iteration** (per mode, per speed point):
-1. Seed k from dry structural frequencies
-2. Compute Q(k) → build state matrix → solve eigenvalues
-3. Update k = ω × (c/2) / V for the nearest mode
-4. Repeat until |Δk| < tolerance (default 1e-4)
-
-| Output | Description |
-|--------|-------------|
-| PK flutter speed | Speed where first modal damping crosses zero |
-| PK flutter frequency | Frequency of the critical mode at flutter |
-| PK flutter dynamic pressure | 0.5 ρ V_f² |
-| **PK flutter speed margin** | V_f_pk − V_required |
-| PK critical mode | Index of the first-to-flutter mode (0=plunge, 1=torsion, 2=control) |
-| PK converged | 1.0 if all modes converged at the final speed point |
-| PK mode damping (3-vector) | Modal damping ratio at the last speed sample |
-| PK mode frequency (3-vector) | Modal frequency [Hz] at the last speed sample |
-
----
-
-### VTP tip inertia — `VTPTipInertia`
-Equivalent distributed mass/inertia of a vertical tail mounted at the wing tip (H-wing).
-Centroid uses the correct tapered-surface formula: `z_c = H/3 × (1+2λ)/(1+λ)`.
-Outputs lumped mass, pitch inertia, pitch static unbalance, and chordwise offset from
-the wing elastic axis — all fed directly into the flutter components.
-
----
-
-## Next upgrade path
-
-| Item | Location | Description |
-|------|----------|-------------|
-| Control-surface unsteady GAF | `pk_flutter.py` `theodorsen_strip_gaf()` | Add Theodorsen-Garrick T-function correction to column δ |
-| DLM / AVL matrices | `pk_flutter.py` `pk_modes_at_speed()` | Pass computed Q(k) as `gaf_function` to replace strip theory |
-
----
-
-## Signal flow
-
-```
 WingboxStructuralEstimate
-  │  EI, GJ, k_h, k_α, k_δ, m, I_α, I_δ, S_δ
-  │
-VTPTipInertia
-  │  m_vtp, I_vtp, S_vtp
-  │
-  ├──► StaticAeroelastic  →  V_div_margin, V_rev_margin, η
-  │
-  ├──► QuasiSteadyFlutterScreen  →  V_f_margin, λ_max(design)
-  │
-  └──► PKFlutterAnalysis  →  V_f_pk_margin, modal g, ω
+  -> elastic axis, AC-to-EA offset, control hinge data, root wingbox dimensions
+
+SpanwiseWingboxProperties
+  -> y, chord(y), wingbox width(y), wingbox height(y), EI(y), GJ(y),
+     structural mass/span(y), structural pitch inertia/span(y)
+
+SchrenkLiftDistribution
+  -> lift/span(y), shear(y), bending moment(y), torque(y)
+
+SpanwiseBeamResponse
+  -> slope(y), deflection(y), twist(y), tip deflection, tip twist
+
+SpanwiseMassDistribution
+  -> added mass/span(y), total mass/span(y), total pitch inertia/span(y),
+     total half-wing mass
+
+SpanwiseEquivalentProperties
+  -> equivalent EI, GJ, plunge stiffness, torsion stiffness, mass/span,
+     pitch inertia/span
+
+StaticAeroelastic, QuasiSteadyFlutterScreen, PKFlutterAnalysis
+  -> active scalar divergence, reversal, flutter, and P-K screening outputs
+
+BeamModalFlutter
+  -> reporting-only modal frequencies, modal lambda, modal flutter speed,
+     modal flutter margin, modal P-K flutter speed, modal P-K margin
 ```
 
-All speed margins and the design-point eigenvalue are suitable as optimisation
-constraints. The P-K speed margin is the highest-fidelity flutter constraint in
-this module.
+## Active Optimization Constraints
+
+The active aeroelastic constraints are still based on the scalar models:
+
+- `aeroelasticity:divergence_speed_margin >= 0`
+- `aeroelasticity:max_real_eigenvalue_at_design <= 0`
+
+The P-K outputs and beam-modal outputs are available for reporting and
+calibration, but they are not currently the primary optimizer constraints.
+
+## Component Summary
+
+| Component | File | Purpose |
+| --- | --- | --- |
+| `MaterialSelector` | `materials/material_selector.py` | Selects material density, stiffness, and allowables. |
+| `WingboxStructuralEstimate` | `model/structural_box.py` | Root wingbox geometry, elastic axis, control hinge, and control inertia bookkeeping. |
+| `SpanwiseWingboxProperties` | `model/spanwise_wingbox.py` | Spanwise chord, wingbox dimensions, `EI(y)`, `GJ(y)`, mass/span, and pitch inertia/span. |
+| `SchrenkLiftDistribution` | `model/schrenk_lift_distribution.py` | Schrenk lift distribution and integrated load resultants. |
+| `SpanwiseBeamResponse` | `model/spanwise_beam_response.py` | Static Euler-Bernoulli deflection and torsion twist from spanwise loads. |
+| `SpanwiseMassDistribution` | `model/spanwise_mass_distribution.py` | Adds engine, fuel, servo, elevon, and VTP mass effects to the structural mass arrays. |
+| `SpanwiseEquivalentProperties` | `model/spanwise_equivalent_properties.py` | Reduces spanwise properties into scalar values consumed by legacy active checks. |
+| `StaticAeroelastic` | `model/static_aeroelastic.py` | Divergence, reversal, and control-effectiveness screen. |
+| `QuasiSteadyFlutterScreen` | `model/flutter.py` | Lumped 3-DOF quasi-steady flutter screen. |
+| `PKFlutterAnalysis` | `model/pk_flutter.py` | Lumped 3-DOF P-K style flutter sweep with Theodorsen strip aerodynamics. |
+| `BeamModalFlutter` | `model/beam_modal_flutter.py` | Spanwise finite-element bending/torsion modal flutter screen with quasi-steady and reduced-frequency Theodorsen P-K diagnostics. |
+| `ConstantLiftLoads` | `model/constant_lift_loads.py` | Older constant lift load model kept for comparison. |
+| `StrengthMargins` | `model/strength_margins.py` | Root bending and torsion strength margins. |
+| `VTPTipInertia` | `model/vtp_inertia.py` | Geometry-derived H-wing VTP tip mass, pitch inertia, and chordwise offset bookkeeping. |
+
+## Important Outputs
+
+Spanwise load and structure outputs:
+
+- `aeroelasticity:spanwise_stations`
+- `aeroelasticity:spanwise_chord`
+- `aeroelasticity:spanwise_EI`
+- `aeroelasticity:spanwise_GJ`
+- `aeroelasticity:schrenk_lift_per_unit_span`
+- `aeroelasticity:schrenk_shear_force`
+- `aeroelasticity:schrenk_bending_moment`
+- `aeroelasticity:schrenk_torque`
+- `aeroelasticity:spanwise_deflection`
+- `aeroelasticity:spanwise_twist`
+- `aeroelasticity:schrenk_tip_deflection`
+- `aeroelasticity:schrenk_tip_twist_deg`
+
+Spanwise mass outputs:
+
+- `aeroelasticity:vtp_tip_mass`
+- `aeroelasticity:vtp_tip_pitch_inertia`
+- `aeroelasticity:spanwise_added_mass_per_unit_span`
+- `aeroelasticity:spanwise_total_mass_per_unit_span`
+- `aeroelasticity:spanwise_total_pitch_inertia_per_unit_span`
+- `aeroelasticity:spanwise_total_half_wing_mass`
+
+Beam-modal outputs:
+
+- `aeroelasticity:beam_modal_bending_frequency`
+- `aeroelasticity:beam_modal_torsion_frequency`
+- `aeroelasticity:beam_modal_max_real_eigenvalue_at_design`
+- `aeroelasticity:beam_modal_flutter_speed`
+- `aeroelasticity:beam_modal_flutter_speed_margin`
+- `aeroelasticity:beam_modal_critical_mode`
+- `aeroelasticity:beam_modal_pk_flutter_speed`
+- `aeroelasticity:beam_modal_pk_flutter_frequency`
+- `aeroelasticity:beam_modal_pk_flutter_speed_margin`
+- `aeroelasticity:beam_modal_pk_mode_damping`
+- `aeroelasticity:beam_modal_pk_mode_frequency`
+- `aeroelasticity:beam_modal_pk_converged`
+
+## Known Assumptions
+
+- Schrenk loading is used as the current lift distribution approximation.
+- The spanwise structural model is a beam abstraction, not a shell model.
+- `SpanwiseEquivalentProperties` deliberately bridges the spanwise model into
+  the older scalar divergence and flutter checks.
+- The modal flutter screen currently uses one bending mode and one torsion mode.
+- Beam-modal aerodynamics are quasi-steady plus Theodorsen strip-theory P-K;
+  no DLM/GAF model is attached yet.
+- Concentrated masses are smeared to nearby spanwise stations for optimizer
+  robustness.
+- VTP tip mass uses one half-wing convention: two mirrored panels at one
+  wingtip, generated from VTP geometry and `aeroelasticity:vtp_areal_density`.
+- VTP aerodynamic loading is not yet included in the beam-modal flutter model.
+
+## Validation Commands
+
+Focused aeroelastic tests:
+
+```powershell
+& C:/Software/Anaconda/envs/aviary/python.exe -m unittest `
+  aviary.models.external_subsystems.aeroelasticity.model.test_schrenk_lift_distribution `
+  aviary.models.external_subsystems.aeroelasticity.model.test_spanwise_wingbox `
+  aviary.models.external_subsystems.aeroelasticity.model.test_spanwise_beam_response `
+  aviary.models.external_subsystems.aeroelasticity.model.test_spanwise_mass_distribution `
+  aviary.models.external_subsystems.aeroelasticity.model.test_spanwise_equivalent_properties `
+  aviary.models.external_subsystems.aeroelasticity.model.test_beam_modal_flutter
+```
+
+Smoke-test the aircraft case without reports:
+
+```powershell
+$env:OPENMDAO_REPORTS='0'
+& C:/Software/Anaconda/envs/aviary/python.exe aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py
+```
+
+## Upgrade Path
+
+Near-term upgrades before moving into a NASTRAN workflow:
+
+- calibrate Schrenk loads against VLM or AVL results for the H-wing planform;
+- add more bending and torsion modes to `BeamModalFlutter`;
+- replace Theodorsen strip-theory modal aerodynamics with modal generalized
+  aerodynamic forces;
+- add VTP aerodynamic participation to the modal flutter screen;
+- connect the beam-modal stability metric as an active optimization constraint
+  only after calibration;
+- compare spanwise static deflection and twist against an independent beam or
+  finite-element model.

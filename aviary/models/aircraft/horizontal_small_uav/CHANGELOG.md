@@ -1,5 +1,23 @@
 # SpaJeti v1.0.0 H-wing - Model Changelog
 
+## v1.29.0 — Step 5: 3-DOF control surface in BeamModalFlutter + active constraint switch
+
+- Extended `BeamModalFlutter` from 2-mode [bending, torsion] to 3-mode [bending, torsion,
+  control rotation]. Control mode shape is a rigid binary rotation over the elevon span.
+  3×3 modal mass matrix includes bending–control (via `CONTROL_STATIC_UNBALANCE`) and
+  torsion–control (via `CONTROL_INERTIA_PER_UNIT_SPAN`) cross terms. GAF: Theodorsen C(k)
+  for [h, α] block; quasi-steady for δ column (Theodorsen-Garrick deferred). Same C(k)
+  scaling applied to ch_alpha terms, consistent with `PKFlutterAnalysis`.
+- New outputs: `BEAM_MODAL_CONTROL_FREQUENCY`, `BEAM_MODAL_3DOF_PK_FLUTTER_SPEED`,
+  `BEAM_MODAL_3DOF_PK_FLUTTER_FREQUENCY`, `BEAM_MODAL_3DOF_PK_FLUTTER_SPEED_MARGIN`,
+  `BEAM_MODAL_3DOF_PK_CONVERGED`, `BEAM_MODAL_3DOF_PK_MODE_DAMPING`,
+  `BEAM_MODAL_3DOF_PK_MODE_FREQUENCY`.
+- Switched active optimizer flutter constraint from quasi-steady
+  `MAX_REAL_EIGENVALUE_AT_DESIGN <= 0` to beam-modal 3-DOF P-K speed margin
+  `BEAM_MODAL_3DOF_PK_FLUTTER_SPEED_MARGIN >= 0`.
+
+---
+
 ## v1.28.0 - 2026-06-17
 
 **Geometry-derived VTP tip inertia for Step 5**
