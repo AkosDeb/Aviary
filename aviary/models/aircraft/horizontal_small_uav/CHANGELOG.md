@@ -1,6 +1,196 @@
 # SpaJeti v1.0.0 H-wing - Model Changelog
 
-## v1.29.0 — Step 5: 3-DOF control surface in BeamModalFlutter + active constraint switch
+## v1.33.0 — 2026-06-17 — VTP structural mass estimation and propulsion CG wiring
+
+New components in `aviary/subsystems/mass/spajeti_based/`:
+
+- **`VTPStructuralMass`** — geometry-based VTP mass consistent with `VTPTipInertia`.
+  Inputs shared with `VTPTipInertia`: `Aircraft.VerticalTail.SPAN`, `ROOT_CHORD`,
+  `TAPER_RATIO`, `AE.VTP_AREAL_DENSITY`, `AE.VTP_TIP_PANEL_COUNT`.
+  Formula: `panel_area × density × panel_count × num_wing_tips (=2)`.
+  Body-frame CG: `x_cg = wing_tip_le_x − box_mid_frac × vtp_mac`
+  (where `box_mid_frac = (front_spar + rear_spar) / 2`).
+  z-CG = `wing_z_apex` (up/down panels cancel symmetrically).
+  Unlike `TailStructuralMass` (area × density from CSV), this component responds
+  to optimizer changes in `Aircraft.VerticalTail.SPAN` correctly.
+
+- **`PropulsionLocationComp`** — engine CG station and fuel tank CG for aft-mounted pusher.
+  `engine_x = -(fuselage_length × engine_station_fraction)` (default 0.85).
+  `fuel_x = fuselage_x_cg` (centre tank CG ≈ fuselage structural centroid).
+  Both components are zero on the fuselage centreline (engine_z = fuel_z = 0).
+
+`SpaJetiMassGroup` changes:
+- Added `vtp_mass` (`VTPStructuralMass`) subsystem; geometry-based VTP outputs
+  `vtp_structural_mass`, `vtp_x_cg`, `vtp_z_cg` at group scope.
+- Added `propulsion_loc` (`PropulsionLocationComp`) subsystem; outputs `engine_x`,
+  `engine_z`, `fuel_x`, `fuel_z` at group scope, consumed by `SpaJetiCGEstimator`.
+- `TailStructuralMass.vtp_structural_mass` renamed to `vtp_area_mass` at group
+  scope (avoids output ambiguity with the geometry-based `vtp_structural_mass`).
+- Added `set_input_defaults('wing_x_apex', val=-0.80, units='m')` to resolve default
+  ambiguity between `WingStructuralMass` (-0.7) and `VTPStructuralMass` (-0.8).
+
+`SpaJetiCGEstimator` changes:
+- Added `vtp_structural_mass`, `vtp_x_cg`, `vtp_z_cg` inputs; VTP is now the 3rd
+  mass entry in the array (fuel excluded-from-empty index bumped from 3 → 4).
+
+`add_spajeti_mass_subsystems` (run script) changes:
+- Extended promotes_inputs of `spajeti_mass` to include VTP geometry variables and
+  `AE.VTP_AREAL_DENSITY`, `AE.VTP_TIP_PANEL_COUNT`.
+- Added model.connect for live engine mass and mission fuel:
+  `premission_propulsion_var(MASS)` → `spajeti_mass.engine_mass`
+  `av.Mission.TOTAL_FUEL` → `spajeti_mass.fuel_mass`
+- `structural_mass_sum` updated: `wing + fuselage + htp_structural_mass + vtp_structural_mass`
+  (HTP area-based from `TailStructuralMass`, VTP geometry-based from `VTPStructuralMass`).
+
+Smoke test results:
+```
+Wing   mass=1.800 kg
+Fuse   mass=2.161 kg  x_cg=−0.900 m
+HTP    mass=0.360 kg
+VTP    mass=0.298 kg  x_cg=−0.870 m
+Engine x=−1.700 m  (85 % of 2.0 m fuselage)
+Fuel   x=−0.900 m  (= fuselage CG)
+A/C    x_cg=−0.888 m
+Empty  mass=5.559 kg (wing+fuse+VTP+engine+avionics)
+```
+
+Versioning note:
+- `MINOR` bump because two new physics components and a propulsion CG path are added.
+
+---
+
+## v1.32.2 - 2026-06-17 - Resolve shared spar-fraction default ambiguity
+
+- Added explicit model-level defaults for `aeroelasticity:front_spar_fraction = 0.15` and `aeroelasticity:rear_spar_fraction = 0.60`.
+- This removes the OpenMDAO ambiguity between the aeroelastic structural box and `SpaJetiMassGroup` wing-mass inputs.
+- `rear_spar_fraction = 0.60` keeps the mass model aligned with the aeroelastic structural-box geometry.
+
+Versioning note:
+- `PATCH` bump because this is a setup fix with no intended new physics.
+
+---
+
+## v1.32.1 - 2026-06-17 - Split run orchestration and remove legacy CG estimator
+
+Refactor-only cleanup of `run_horizontal_small_uav.py`.
+
+- Moved dashboard/HTML generation into `dashboard_reports.py`.
+- Moved optimizer selection, driver options, design variables, constraints, and objective setup into `optimization_setup.py`.
+- Removed the old `CGEstimatorGroup` wiring from the run script; console reporting now reads the active `SpaJetiMassGroup` CG/mass outputs instead.
+- Removed stale manual CG bypass constants from `horizontal_small_uav_config.py`.
+
+Versioning note:
+- `PATCH` bump because this is organization/cleanup with no intended physics or DV-set change.
+
+---
+
+## v1.32.0 — 2026-06-17 — Connect SpaJetiMassGroup to optimizer fuel budget
+
+Live structural mass wired into `FuelBudgetEstimate`, replacing the fixed `EMPTY_MASS_KG = 7`
+placeholder. The fuel budget constraint now responds to optimizer changes in wing geometry,
+fuselage dimensions, and tail area.
+
+Changes in `run_horizontal_small_uav.py`:
+
+- **`FuelBudgetEstimate`** — input `Aircraft.Design.EMPTY_MASS` (fixed scalar) replaced by
+  `'structural_empty_mass'` (live model-scope variable). Both `setup()` and `compute()` updated.
+
+- **`add_spajeti_mass_subsystems(prob)`** — new function wiring three subsystems:
+  1. `wing_apex_to_fwd` (ExecComp): sign-flips `wing_x_apex` (0.80 m, x-AFT) to
+     `wing_x_apex_fwd` (−0.80 m, x-FORWARD) to match `WingStructuralMass` body frame.
+  2. `spajeti_mass` (`SpaJetiMassGroup`): connects aeroelasticity spanwise arrays,
+     wing/fuselage/tail geometry from Aviary pre_mission and local IVC, and outputs
+     `wing_structural_mass`, `fuselage_structural_mass`, `tail_structural_mass`.
+     Fuselage dimensions promoted from local `'fus_max_width'`/`'fus_max_height'` IVC
+     (overrides CSV `Aircraft.Fuselage.MAX_WIDTH`/`MAX_HEIGHT`).
+  3. `structural_mass_sum` (ExecComp): sums the three structural masses into
+     `structural_empty_mass` at model scope.
+
+- **`add_fuel_budget_constraint`** — promotes `'structural_empty_mass'` (was
+  `Aircraft.Design.EMPTY_MASS`).
+
+- **`build_problem()`** — calls `add_spajeti_mass_subsystems(prob)` after
+  `add_aeroelasticity_subsystems(prob)`.
+
+Execution order: aeroelasticity spanwise arrays → SpaJetiMassGroup → structural_mass_sum →
+FuelBudgetEstimate. No algebraic loops; derivatives flow through all three stages.
+
+TODO.md integration status updated: optimizer connection [DONE — v1.32.0].
+
+Versioning note:
+- `MINOR` bump because it wires a new live physics-based mass path into the optimizer.
+
+---
+
+## v1.31.0 — 2026-06-17 — SpaJeti physics-based structural mass estimation
+
+New package `aviary/subsystems/mass/spajeti_based/` with five components:
+
+- **`WingStructuralMass`** — wing mass from `SpanwiseWingboxProperties` arrays
+  (`SPANWISE_MASS_PER_UNIT_SPAN` trapz × 2 × (1 + non_structural_fraction)).
+  Chordwise CG from structural box midpoint: `(FRONT_SPAR_FRACTION + REAR_SPAR_FRACTION) / 2`
+  (mass-weighted centroid of a two-spar box with equal thicknesses — NOT the elastic axis).
+  Body-frame: `x_cg_wing = wing_x_apex − box_mid × c_mass_weighted` (x positive FORWARD, nose at origin).
+  Hard stop if `taper_ratio ∉ [0, 1]` or `sweep < 0`; warning if `taper_ratio < 0.3`.
+
+- **`FuselageStructuralMass`** — fuselage mass from perimeter integration along 200 slices
+  using Ramanujan ellipse approximation with linear nose/tail tapers.
+  `x_cg_fus = −s_centroid`, `s_centroid = ∫s·P(s)ds / ∫P(s)ds`.
+  Areal density default **1.95 kg/m²** (1.5 composite × 1.3 for stringers, internal walls,
+  mounting points).
+
+- **`TailStructuralMass`** — HTP and VTP mass from planform area × areal density
+  (default 1.2 kg/m²). CG deferred until tail geometry moment arms are available.
+
+- **`SpaJetiCGEstimator`** — aircraft CG from structural masses + engine/fuel/avionics
+  point masses. Outputs `aircraft_x_cg`, `aircraft_z_cg`, `aircraft_empty_mass`,
+  `aircraft_total_mass`.
+
+- **`SpaJetiMassGroup`** / **`SpaJetiMassBuilder`** — assembled group wrapping all four
+  components; implements the `SubsystemBuilder` interface.
+
+Coordinate frame: **x positive FORWARD, nose at origin (x=0), z positive DOWN**.
+All component x-positions are negative (aft of nose).
+
+Smoke test: wing=1.80 kg, fuselage=2.16 kg, tail=0.50 kg, empty=5.26 kg at
+SpaJeti representative inputs. All six components run without error.
+
+TODO.md updated: Wing [DONE], Fuselage [DONE], Tail [PARTIAL — mass only, CG deferred],
+VTP mass [TODO], Propulsion location [TODO], optimizer connection [TODO].
+
+Versioning note:
+- `MINOR` bump because it adds a new physics-based mass estimation subsystem package.
+
+---
+
+## v1.30.0 — 2026-06-17 — Theodorsen-Garrick T-functions for control surface δ column
+
+- Replaced the quasi-steady placeholder in the `BeamModalFlutter` δ-column GAF with the
+  full Theodorsen-Garrick unsteady treatment:
+
+      T10 = √(1−c²) + arccos(c)
+      T11 = ½(1−2c)·arccos(c) + √(1−c²)     where c = 2·hinge_fraction_from_LE − 1
+      η_δ = T11 / (2·T10)
+
+  The δ column now gets the same `C(k)·(1 + ik·η_δ)` structure as the pitch (α) column.
+  Recovers quasi-steady exactly at k = 0; η_δ → 0 as hinge approaches trailing edge.
+
+- New helper `_garrick_T10_T11(hinge_fraction_from_LE)` in `beam_modal_flutter.py`.
+- New input `CONTROL_HINGE_FRACTION` (default 0.75 = 75 % chord) added to `BeamModalFlutter.setup()`
+  and wired through `AeroelasticityBuilder` promotes_inputs.
+- All 11 unit tests pass including new `TestGarrickTFunctions` class (3 tests) and
+  `test_delta_column_nonzero_imaginary_at_positive_k`.
+- Optimization (v1.29.0 + Garrick δ column) ran 113 IPOPT iterations and converged:
+  flutter speed margin +145 m/s, divergence +261 m/s, M_crit margin +0.070,
+  wing t/c = 0.115. All constraints satisfied.
+
+Versioning note:
+- `MINOR` bump because it replaces a placeholder with a derived unsteady aerodynamic
+  formula in the active optimizer flutter model.
+
+---
+
+## v1.29.0 — 2026-06-17 — Step 5: 3-DOF control surface in BeamModalFlutter + active constraint switch
 
 - Extended `BeamModalFlutter` from 2-mode [bending, torsion] to 3-mode [bending, torsion,
   control rotation]. Control mode shape is a rigid binary rotation over the elevon span.

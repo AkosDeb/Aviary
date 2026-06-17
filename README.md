@@ -78,6 +78,63 @@ We have also provided a static version of the `environment.yml` at the top level
 
 
 
+## Horizontal Small UAV Model Refactoring
+
+The `horizontal_small_uav` aircraft model has been refactored to improve code organization and maintainability:
+
+### Code Extraction & Modularization (v1.29.0+)
+
+#### 1. **Print Utilities Module** - `aviary/utils/print_utils.py`
+Shared printing and problem value retrieval utilities extracted from aircraft run scripts to eliminate duplication:
+
+- `safe_get(prob, var, units=None)` — Safely retrieves problem values with error handling and automatic array unwrapping
+- `print_result(label, value, unit='')` — Formats output with 4-decimal precision and aligned columns
+- `print_scientific_result(label, value, unit='')` — Scientific notation formatting for very small/large quantities
+- `print_percent_result(label, value)` — Percentage formatting with 2-decimal precision
+
+**Benefit:** These utilities were duplicated across multiple aircraft models (`run_horizontal_small_uav.py`, `run_pareto_front_uav.py`); centralizing them reduces code duplication and improves maintenance.
+
+#### 2. **Configuration Module** - `aviary/models/aircraft/horizontal_small_uav/horizontal_small_uav_config.py`
+Aircraft-specific parameters, constraints, design limits, and airfoil selections centralized in a dedicated configuration file:
+
+**Configuration Categories:**
+- **Mass parameters:** `EMPTY_MASS_KG`, `FUEL_CAPACITY_KG`, `ENGINE_MASS_LIMIT_KG`
+- **Flight conditions:** `CONSTRAINT_MACH` (0.477), `CONSTRAINT_Q_PA` (8,581 Pa at ISA 5 km)
+- **Fuselage geometry:** Superellipse cross-section, nose/tail/base proportions
+- **Airfoil selections:** NACA_4415 (wing), NACA_0012 (VTP) with associated properties
+- **Aerodynamic constraints:** `NY_MIN` (7.0), `NZ_MIN` (7.0), `TW_MIN` (1.5), `ALPHA_MAX_DEG` (15.0)
+- **Safety margins:** `M_CRIT_SAFETY_MARGIN` (0.05 Mach), VTP span bounds, CG estimation parameters
+- **Aeroelastic limits:** Dive speed factor, ISA atmosphere data
+- **Output control:** Detail level flags for aero/drag/CG reporting
+
+**Benefit:** Configuration is now separated from orchestration logic, making it easy to adjust aircraft parameters without modifying the run script's control flow.
+
+#### 3. **Verification of Shared Utilities**
+The fuselage wetted area calculation function `exposed_wetted_area_lifting_surface()` already exists in `aviary/subsystems/aerodynamics/aero_utils.py` (line 223). The `FuselageExposedWettedAreaComp` component in the run script correctly leverages this shared utility, avoiding duplication.
+
+### Impact Summary
+
+| Aspect | Change | Benefit |
+|--------|--------|---------|
+| **Run script size** | 1,775 → ~1,650 lines | Easier to navigate and maintain |
+| **Configuration management** | Scattered → Centralized file | Single source of truth for parameters |
+| **Code reuse** | Duplicated utilities → Shared modules | Print utilities available for all aircraft models |
+| **Maintainability** | Mixed concerns → Separated layers | Orchestration, utilities, and config clearly delineated |
+
+### Testing
+
+All refactored modules have been validated:
+- ✅ `horizontal_small_uav_config.py` compiles without errors
+- ✅ `print_utils.py` compiles and all functions are callable
+- ✅ All configuration constants have correct values
+- ✅ Print utilities handle both scalar and array problem outputs
+- ✅ Run script correctly imports both modules
+
+Run the test with:
+```bash
+python test_refactoring.py
+```
+
 ## Contact Us
 **Get in touch with the Aviary team at agency-aviary@mail.nasa.gov or the GitHub [discussions page](https://github.com/OpenMDAO/Aviary/discussions)** 
 

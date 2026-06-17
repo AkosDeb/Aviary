@@ -43,18 +43,18 @@ cd C:\Software\Repository\Aviary_clean
 python aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py
 ```
 
-Outputs → `outputs/run_horizontal_small_uav_try_v1_v1.19.0_out/`
+Outputs → `outputs/run_horizontal_small_uav_try_v1_v1.29.0_out/`
 
 ### Open dashboard (after opt completes)
 
 ```powershell
-aviary dashboard run_horizontal_small_uav_try_v1_v1.19.0
+aviary dashboard run_horizontal_small_uav_try_v1_v1.29.0
 ```
 
 ### One-liner: run opt then launch dashboard
 
 ```powershell
-python aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py; aviary dashboard run_horizontal_small_uav_try_v1_v1.19.0
+python aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py; aviary dashboard run_horizontal_small_uav_try_v1_v1.29.0
 ```
 
 ---
@@ -102,7 +102,7 @@ before running.
 | `LongitudinalLoadFactor` | `aviary/subsystems/aerodynamics/SpaJeti_based/lateral_load_factor.py` | Nz = CL_alpha*alpha_max (q*S) / W |
 | `MACGeometryComp` | `aviary/subsystems/aerodynamics/SpaJeti_based/surface_geometry.py` | MAC chord, spanwise station, and body-frame position (x, z) |
 | `MachCriticalComp` | `aviary/subsystems/aerodynamics/SpaJeti_based/mach_critical.py` | Weisshaar M_DD / M_crit; CL derived from Nz_min requirement; constrained M_crit >= DASH_MACH + M_CRIT_SAFETY_MARGIN |
-| `CGEstimatorGroup` / `CGComputeComp` | `aviary/subsystems/geometry/flops_based/cg_estimator.py` | Weighted-average aircraft CG from component mass list; bypass mode available |
+| `SpaJetiMassGroup` | `aviary/subsystems/mass/spajeti_based/mass_group.py` | Physics-based structural mass plus aircraft mass/CG outputs |
 | `FuelBudgetEstimate` | `run_horizontal_small_uav.py` (inline) | Available fuel = gross − empty − payload − engine |
 
 Component-level formulas, I/O tables, and worked examples are in:
@@ -189,83 +189,26 @@ This is the x-reference for static margin and CG travel calculations.
 
 ---
 
-## Centre of Gravity Estimator
+## Centre of Gravity and Structural Mass
 
-Computed by `CGEstimatorGroup` (`cg_estimator.py`) using the standard component
-weighted sum:
+The legacy `CGEstimatorGroup` has been removed from this aircraft case.  Current
+mass and CG reporting comes from `SpaJetiMassGroup` in
+`aviary/subsystems/mass/spajeti_based/`.
 
-```
-x_cg = sum(m_i * x_i) / sum(m_i)    (and likewise for y_cg, z_cg)
-```
-
-### Bypass mode
-
-Set `CG_BYPASS = True` at the top of the run file to skip estimation entirely.
-The group exposes the same four output names (`x_cg`, `y_cg`, `z_cg`,
-`total_mass`) from an `IndepVarComp`; all downstream consumers are unaffected.
-
-```python
-CG_BYPASS         = False   # flip to True to go manual
-CG_X_MANUAL_M     = 0.91   # [m]  x_cg override
-CG_Y_MANUAL_M     = 0.00   # [m]  y_cg override
-CG_Z_MANUAL_M     = 0.05   # [m]  z_cg override
-CG_MASS_MANUAL_KG = 15.0   # [kg] total mass override
-```
-
-### add_component API
-
-```python
-# Fixed mass + position (known hardware)
-cg_est.add_component('camera', mass=0.15, x=0.30, y=0.05, z=0.08)
-
-# Variable mass from an OpenMDAO model-scope variable, fixed position
-cg_est.add_component('fuel', mass=av.Mission.TOTAL_FUEL, x=0.90, y=0.0, z=0.05)
-
-# Variable mass via explicit connect (non-model-scope path)
-cg_est.add_component('engine', mass='cg_engine_mass', x=1.55, y=0.0, z=0.0)
-# ... then:
-prob.model.connect(premission_propulsion_var(...), 'cg_est.cg_engine_mass')
-```
-
-### SpaJeti component list (baseline estimates)
-
-All structural masses are **placeholders** — replace with FLOPS component mass
-outputs when the weight breakdown subsystem is added.
-
-| Component | Mass | x [m] | y [m] | z [m] | Notes |
-|---|---|---|---|---|---|
-| wing_struct | 1.50 kg [P] | 0.80 | 0.0 | 0.00 | WING_X_APEX_M |
-| fuselage | 1.00 kg [P] | 1.00 | 0.0 | 0.00 | mid-body |
-| empennage | 0.25 kg [P] | 1.85 | 0.0 | 0.00 | HTP + VTP mounts |
-| vtp_pair | 0.15 kg [P] | 1.75 | 0.0 | −0.15 | above wing tips |
-| landing_gear | 0.20 kg [P] | 0.95 | 0.0 | 0.15 | below fuselage |
-| avionics | 0.25 kg [P] | 0.45 | 0.0 | 0.00 | nose bay |
-| **engine** | *optimizer* | 1.55 | 0.0 | 0.00 | SmallTurbojet mass |
-| **payload** | *optimizer* | 0.85 | 0.0 | 0.05 | CrewPayload variable |
-| **fuel** | *optimizer* | 0.90 | 0.0 | 0.05 | Mission.TOTAL_FUEL |
-
-[P] = placeholder mass.  Bold = live OpenMDAO variable.
-
-### Outputs
+The group combines live wing, fuselage, and tail structural mass estimates with
+engine/fuel/payload point masses.  Its aircraft-level outputs are:
 
 | Variable | Units | Description |
 |---|---|---|
-| `x_cg` | m | CG x-station from nose (positive aft) |
-| `y_cg` | m | CG lateral offset (0 for symmetric) |
-| `z_cg` | m | CG z-station from nose datum (positive down) |
-| `total_mass` | kg | sum of registered component masses |
+| `aircraft_x_cg` | m | Aircraft CG x-position in the SpaJeti mass frame |
+| `aircraft_z_cg` | m | Aircraft CG z-position in the SpaJeti mass frame |
+| `aircraft_empty_mass` | kg | Structural empty mass plus fixed installed items |
+| `aircraft_total_mass` | kg | Empty mass plus payload and fuel |
 
-An approximate static margin (wing AC only) is printed in the results summary:
-
-```
-SM_approx = (wing_x_mac_c4 - x_cg) / wing_c_mac
-```
-
-Positive = CG forward of wing aerodynamic centre = stable.  A full multi-surface
-neutral-point calculation will be added in `StaticMarginComp` (see TOOD.md).
+Static-margin reporting is intentionally disabled until the CG x-axis convention
+is unified with the MAC geometry x-axis.
 
 ---
-
 ## Optimisation Problem
 
 ### Design Variables
