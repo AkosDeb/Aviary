@@ -310,16 +310,18 @@ class WingSurface(LiftingSurfaceGroup):
     def _setup_mach_critical(self):
         """Wing M_DD and M_crit via Weisshaar Eq. 36 (K_A = 0.887).
 
-        CL for the formula is computed as  CL_alpha * alpha_max_rad  using the same
-        alpha that drives the Nz constraint.  When StallAlphaComp is wired in later,
-        only ``alpha_max_deg`` needs to change -- both constraints update automatically.
+        CL for Weisshaar is derived from the Nz_min requirement:
+          CL_nz = nz_min * aircraft_mass * g / (dynamic_pressure * wing_area)
+          CL    = CL_nz * mcrit_cl_safety_factor
 
         Group-scope inputs consumed here:
-          section_tc       -- from AirfoilConstantsComp
-          surface_sweep_c4 -- generic wing sweep input
-          surface_CL_alpha -- from Polhamus (shared name at Group scope)
-          alpha_max_deg    -- from model scope (load_cond IndepVarComp)
-          mach_upper_bound -- from model scope (= DASH_MACH + safety buffer)
+          section_tc            -- from AirfoilConstantsComp
+          surface_sweep_c4      -- generic wing sweep input
+          nz_min                -- from model scope (load_cond IndepVarComp)
+          aircraft_mass         -- from model scope (load_cond IndepVarComp)
+          dynamic_pressure      -- from model scope (load_cond IndepVarComp)
+          Aircraft.Wing.AREA    -- from model scope (Aviary variable)
+          mach_upper_bound      -- from model scope (load_cond IndepVarComp)
 
         Outputs promoted to model scope (add to call-site promotes_outputs):
           M_DD (informational), M_crit, mach_crit_margin = M_crit - mach_upper_bound
@@ -330,8 +332,10 @@ class WingSurface(LiftingSurfaceGroup):
             promotes_inputs=[
                 'surface_sweep_c4',
                 'section_tc',
-                ('CL_alpha',         'surface_CL_alpha'),
-                'alpha_max_deg',
+                'nz_min',
+                'aircraft_mass',
+                'dynamic_pressure',
+                ('wing_area', Aircraft.Wing.AREA),
                 'mach_upper_bound',
             ],
             promotes_outputs=['M_DD', 'M_crit', 'mach_crit_margin'],

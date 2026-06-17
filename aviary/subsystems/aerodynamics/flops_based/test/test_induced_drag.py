@@ -106,9 +106,19 @@ class InducedDragTest(unittest.TestCase):
         )
         assert_near_equal(re_ler, 46594.835362663594, 1e-9)
 
+        with self.assertWarns(RuntimeWarning):
+            r_main = leading_edge_suction_parameter_roskam(
+                leading_edge_reynolds_number=1.0e4,
+                mach=0.5,
+                leading_edge_sweep_rad=np.deg2rad(45.0),
+                aspect_ratio=8.0,
+                taper_ratio=0.5,
+            )
+        assert 0.70 < r_main < 0.80
+
         with self.assertRaises(NotImplementedError):
             leading_edge_suction_parameter_roskam(
-                leading_edge_reynolds_number=1.0e4,
+                leading_edge_reynolds_number=1.0e3,
                 mach=0.5,
                 leading_edge_sweep_rad=np.deg2rad(45.0),
                 aspect_ratio=8.0,

@@ -31,6 +31,8 @@ from aviary.subsystems.geometry.flops_based.cg_estimator import CGEstimatorGroup
 from aviary.subsystems.geometry.flops_based.superellipse_fuselage import (
     SuperellipseFuselageGeometry,
     superellipse_area,
+    superellipse_width_height_distribution,
+    _superellipse_surface_points,
 )
 from aviary.subsystems.aerodynamics.SpaJeti_based.airfoil_data import NACA_0012, NACA_4415
 from aviary.subsystems.aerodynamics.SpaJeti_based.surface_config import SurfaceConfig
@@ -60,10 +62,10 @@ ENGINE_MASS_LIMIT_KG = 5.0
 #   patch (x.y.Z) -- bug fix, doc tweak, parameter change
 #   minor (x.Y.0) -- new physics component or constraint
 #   major (X.0.0) -- architectural redesign (new DV set, new EOM, new mission)
-MODEL_VERSION = '1.16.0'
+MODEL_VERSION = '1.28.0'
 
 OUTPUT_ROOT = REPO_ROOT / 'outputs'
-PROBLEM_NAME = 'run_horizontal_small_uav'
+PROBLEM_NAME = 'run_horizontal_small_uav_try_v1'
 VERSIONED_RUN_NAME = f'{PROBLEM_NAME}_v{MODEL_VERSION}'
 OUTPUT_DIR = OUTPUT_ROOT / f'{VERSIONED_RUN_NAME}_out'
 AVAILABLE_FUEL = 'horizontal_small_uav:available_fuel'
@@ -134,7 +136,7 @@ VTP_AIRFOIL  = NACA_0012   # symmetric 12 % chord -- lateral stability and contr
 # Keep aircraft:wing:thickness_to_chord fixed in the CSV for now so FLOPS weights
 # remain unchanged while we test the M_crit constraint.
 WING_TC_INITIAL = WING_AIRFOIL.tc_ratio
-WING_TC_LOWER   = 0.08
+WING_TC_LOWER   = 0.05
 WING_TC_UPPER   = 0.18
 
 # ── Surface aerodynamic configurations ────────────────────────────────────────
@@ -317,7 +319,6 @@ def print_aero_detail(prob):
 
     ar_eff        = safe_get(prob, 'AR_eff')
     k_h           = safe_get(prob, 'k_h')
-    k_wf          = safe_get(prob, 'K_wf')
     wing_cl_alpha = safe_get(prob, 'wing_CL_alpha')
 
     wing_root_chord = safe_get(prob, 'wing_root_chord',  'm')
@@ -361,7 +362,7 @@ def print_aero_detail(prob):
     print('\nWing Geometry - Inputs')
     print('-' * 70)
     print_result('Span b  [design var]',          wing_span,    'm')
-    print_result('Reference area S_ref  [fixed]', wing_area,    'm^2')
+    print_result('Reference area S_ref  [design var]', wing_area,    'm^2')
     print_result('AR_geo = b^2/S',                wing_ar,      '')
     print_result('Quarter-chord sweep Lc/4',      wing_sweep,   'deg')
     print_result('Taper ratio lambda',            wing_taper,   '')
@@ -438,49 +439,49 @@ def print_aero_detail(prob):
     print(f'  {"Input: t/c  [design var]":<35} = ', end='')
     print(f'{wing_section_tc:>10.4f}  ({WING_AIRFOIL.name})'
           if not isinstance(wing_section_tc, str) else wing_section_tc)
-    print(f'  {"Input: alpha_max [shared with Nz]":<35} = {ALPHA_MAX_DEG:>10.4f} deg')
+    print(f'  {"Input: Nz_min":<35} = {NZ_MIN:>10.4f}')
+    print(f'  {"Input: aircraft_mass":<35} = {MAX_TAKEOFF_MASS_KG:>10.4f} kg')
+    print(f'  {"Input: dynamic_pressure":<35} = {CONSTRAINT_Q_PA:>10.1f} Pa')
     print(f'  {"Input: sweep c/4  phi_25":<35} = ', end='')
     print(f'{wing_sweep:>10.4f} deg' if not isinstance(wing_sweep, str) else wing_sweep)
-    if not any(isinstance(v, str) for v in (wing_sweep, wing_cl_alpha, wing_section_tc)):
-        cl_from_alpha = wing_cl_alpha * (ALPHA_MAX_DEG * np.pi / 180.0)
-        phi_rad = wing_sweep * np.pi / 180.0
-        cos1    = np.cos(phi_rad)
-        mdd_r   = 0.887 / cos1 - wing_section_tc / cos1**2 - cl_from_alpha / (10.0 * cos1**3)
-        mcrit_r = mdd_r - _m_delta
-        print()
-        print_result('CL = wing_CL_alpha * alpha_max_rad', cl_from_alpha, '')
-        print_result('M_DD (reproduced)',                   mdd_r,  '')
-        print_result('M_DD (from OpenMDAO)',                m_dd,   '')
-        print_result('(0.1/80)^(1/3) = M_DD - M_crit',    _m_delta, '')
-        print_result('M_crit (reproduced)',                 mcrit_r, '[informational]')
-        print_result('M_crit (from OpenMDAO)',              m_crit,  '[informational]')
-        print()
-        print(f'  {"M_crit check: DASH_MACH + safety":<35} = '
-              f'{DASH_MACH:.3f} + {M_CRIT_SAFETY_MARGIN:.3f} = {MACH_UPPER_BOUND:.4f}')
-        print_result('mach_crit_margin = M_crit-check [min 0]', m_crit_margin, '')
-        if not isinstance(m_crit_margin, str):
-            status = 'OK' if m_crit_margin >= 0.0 else 'VIOLATED -- see TOOD.md alpha_max/CL_max'
-            print(f'  {"Constraint status":<35}   {status}')
+    if not any(isinstance(v, str) for v in (wing_sweep, wing_section_tc)):
+        wing_area_val = safe_get(prob, av.Aircraft.Wing.AREA, 'm**2')
+        if not isinstance(wing_area_val, str):
+            cl_design = NZ_MIN * MAX_TAKEOFF_MASS_KG * 9.80665 / (CONSTRAINT_Q_PA * wing_area_val)
+            phi_rad = wing_sweep * np.pi / 180.0
+            cos1    = np.cos(phi_rad)
+            mdd_r   = 0.887 / cos1 - wing_section_tc / cos1**2 - cl_design / (10.0 * cos1**3)
+            mcrit_r = mdd_r - _m_delta
+            print()
+            print_result('CL = Nz_min*m*g / (q*S)',                cl_design, '')
+            print_result('M_DD (reproduced)',                       mdd_r,    '')
+            print_result('M_DD (from OpenMDAO)',                    m_dd,     '')
+            print_result('(0.1/80)^(1/3) = M_DD - M_crit',        _m_delta, '')
+            print_result('M_crit (reproduced)',                     mcrit_r,  '[informational]')
+            print_result('M_crit (from OpenMDAO)',                  m_crit,   '[informational]')
+            print()
+            print(f'  {"M_crit check: DASH_MACH + safety":<35} = '
+                  f'{DASH_MACH:.3f} + {M_CRIT_SAFETY_MARGIN:.3f} = {MACH_UPPER_BOUND:.4f}')
+            print_result('mach_crit_margin = M_crit-check [min 0]', m_crit_margin, '')
+            if not isinstance(m_crit_margin, str):
+                status = 'OK' if m_crit_margin >= 0.0 else 'VIOLATED'
+                print(f'  {"Constraint status":<35}   {status}')
 
     # ── 3. Wing Polhamus ──────────────────────────────────────────────────────
-    print(f'\nWing CL_alpha - LiftCurveSlopePolhamus (Roskam 8.22) + K_wf  [{WING_AIRFOIL.name}]')
+    print(f'\nWing CL_alpha - LiftCurveSlopePolhamus (Roskam 8.22)  [{WING_AIRFOIL.name}]')
     print('-' * 70)
     print(f'  {"Input: AR_eff (from endplate corr.)":<35} = ', end='')
     print(f'{ar_eff:>10.4f}' if not isinstance(ar_eff, str) else ar_eff)
     print(f'  {"Input: Mach at design point":<35} = {CONSTRAINT_MACH:>10.4f}')
     print(f'  {"Input: beta_PG = sqrt(1 - M^2)":<35} = {beta_pg:>10.4f}')
-    print(f'  {"Input: section lift slope":<35} = {WING_AIRFOIL.cl_alpha_per_rad:>10.4f} /rad'
-          f'  ({WING_AIRFOIL.name}, Re={WING_AIRFOIL.re_ref:.0e}, incompressible)')
+    print(f'  {"Input: t/c (Abbott & von Doenhoff)":<35} = ', end='')
+    wing_tc_val = safe_get(prob, 'wing_section_tc')
+    print(f'{wing_tc_val:>10.4f}' if not isinstance(wing_tc_val, str) else wing_tc_val)
     print(f'  {"Input: quarter-chord sweep Lambda_c/4":<35} = ', end='')
     print(f'{wing_sweep:>10.4f} deg' if not isinstance(wing_sweep, str) else wing_sweep)
     print(f'  {"Input: taper ratio Lambda":<35} = ', end='')
     print(f'{wing_taper:>10.4f}' if not isinstance(wing_taper, str) else wing_taper)
-    print(f'  {"Input: fuselage equiv. diam. d_f":<35} = {FUSELAGE_EQUIV_DIAMETER_M:>10.4f} m')
-    if not isinstance(wing_span, str):
-        print(f'  {"Input: d_f / b (K_wf sensitivity)":<35} = '
-              f'{FUSELAGE_EQUIV_DIAMETER_M / wing_span:>10.4f}')
-    print_result('Output: K_wf  (fuselage correction)',  k_wf,          '')
-    print_result('Output: CL_alpha  (with K_wf)',         wing_cl_alpha, '/rad')
+    print_result('Output: CL_alpha  (wing-alone)',        wing_cl_alpha, '/rad')
 
     # ── 4. VTP geometry inputs ────────────────────────────────────────────────
     print('\nVTP Geometry - HTailGeometry (each panel; x2 for full H-tail)')
@@ -508,7 +509,7 @@ def print_aero_detail(prob):
     print(f'  {"Input: beta_PG":<35} = {beta_pg:>10.4f}')
     print(f'  {"Input: section lift slope":<35} = {VTP_AIRFOIL.cl_alpha_per_rad:>10.4f} /rad'
           f'  ({VTP_AIRFOIL.name}, Re={VTP_AIRFOIL.re_ref:.0e}, incompressible)')
-    print(f'  {"Input: fuselage diam. d_f":<35} = {0.0:>10.4f} m  (K_wf = 1)')
+    print(f'  {"Input: t/c (Abbott & von Doenhoff)":<35} = {VTP_AIRFOIL.tc_ratio:>10.4f}')
     print_result('Input: sweep c/4',                    vtp_sweep,  'deg')
     print_result('Input: taper ratio Lambda',                vtp_taper,  '')
     print_result('Output: CL_alpha_v',                  cl_alpha_v, '/rad')
@@ -584,11 +585,11 @@ def print_aero_detail(prob):
     print(f'  {"q":<33} = {CONSTRAINT_Q_PA:>10.1f} Pa')
     print_result('S_ref',                               wing_area,    'm^2')
     print(f'  {"m":<33} = {MAX_TAKEOFF_MASS_KG:>10.4f} kg')
-    print(f'  {"alpha_max  [fixed input]":<33} = {12.0:>10.4f} deg')
-    print_result('Input: CL_alpha (endplate + K_wf)',    wing_cl_alpha, '/rad')
+    print(f'  {"alpha_max  [fixed input]":<33} = {ALPHA_MAX_DEG:>10.4f} deg')
+    print_result('Input: CL_alpha (endplate, wing-alone)', wing_cl_alpha, '/rad')
 
     if not any(isinstance(v, str) for v in (wing_cl_alpha, wing_area)):
-        alpha_max_rad = 12.0 * np.pi / 180.0
+        alpha_max_rad = ALPHA_MAX_DEG * np.pi / 180.0
         cl_calc   = wing_cl_alpha * alpha_max_rad
         lift_calc = cl_calc * CONSTRAINT_Q_PA * wing_area
         nz_calc   = lift_calc / (MAX_TAKEOFF_MASS_KG * 9.80665)
@@ -611,6 +612,98 @@ def apply_aircraft_mass_and_fuel_limits(prob):
     prob.aviary_inputs.set_val(av.Aircraft.Fuel.TOTAL_CAPACITY, FUEL_CAPACITY_KG, 'kg')
     prob.aviary_inputs.set_val(av.Aircraft.Fuel.WING_FUEL_CAPACITY, 0.0, 'kg')
     prob.aviary_inputs.set_val(av.Aircraft.Fuel.FUSELAGE_FUEL_CAPACITY, FUEL_CAPACITY_KG, 'kg')
+
+
+class FuselageExposedWettedAreaComp(om.ExplicitComponent):
+    """Fuselage exposed wetted area after wing (and optional tail) airfoil cutouts.
+
+    The wing exits the fuselage skin on each side (left and right), punching a hole
+    whose shape is the airfoil cross-section at the local chord.  The area of that
+    hole is A = K * (t/c) * c_fus², where K is the airfoil cross-section area
+    coefficient (= 0.6843 for NACA 4-digit series, analytically integrated from the
+    standard thickness distribution).
+
+    The chord at the fuselage wall accounts for taper:
+        c_fus = c_root * (1 - (1 - taper) * d_fus / b)
+    where d_fus = fuselage max width and b = wing span.
+
+    A symmetrical hook for a fuselage-mounted tail is included (htail_c_root_at_fus
+    and htail_tc_at_fus default to 0 -- set when a fuselage tail is implemented).
+
+    Formula
+    -------
+    c_fus  = wing_root_chord * (1 - (1 - taper_ratio) * fus_max_width / wing_span)
+    Swet_fus_exposed = fuselage_wetted_area
+                     - 2 * K_wing  * wing_tc  * c_fus**2
+                     - 2 * K_htail * htail_tc * htail_c_root_at_fus**2
+
+    Inputs
+    ------
+    fuselage_wetted_area  : m²   Gross outer surface from SuperellipseFuselageGeometry
+    wing_root_chord       : m    Wing root chord (from WingSurface)
+    wing_section_tc       : –    Wing t/c ratio (design variable)
+    fus_max_width         : m    Fuselage max width at wing station
+    wing_span             : m    Full wing span (Aircraft.Wing.SPAN, design variable)
+    wing_taper_ratio      : –    Wing taper ratio (Aircraft.Wing.TAPER_RATIO)
+    htail_c_root_at_fus   : m    H-tail root chord at fuselage wall (default 0; future use)
+    htail_tc_at_fus       : –    H-tail t/c at fuselage wall (default 0; future use)
+
+    Outputs
+    -------
+    fuselage_exposed_wetted_area : m²   Net fuselage wetted area after cutouts
+
+    Options
+    -------
+    K_wing  : float  Airfoil cross-section area coeff for wing  (default 0.6843)
+    K_htail : float  Airfoil cross-section area coeff for h-tail (default 0.6843)
+
+    Numerical example — UAV baseline (b=1.8 m, AR=7.2, taper=0.8, t/c=0.15, d_fus=0.155 m)
+    -----------------------------------------------------------------------------------------
+    c_root = 2 * S_wing / (b * (1 + taper)) = 2 * 0.45 / (1.8 * 1.8) = 0.2778 m
+    c_fus  = 0.2778 * (1 - 0.2 * 0.155 / 1.8)  = 0.2778 * 0.9828 = 0.2730 m
+    A_hole = 0.6843 * 0.15 * 0.2730**2          = 0.00765 m²
+    wing cutout (×2)                             = 0.01530 m²
+    Swet_fus_exposed = Swet_fus_gross - 0.0153 m²
+    """
+
+    def initialize(self):
+        self.options.declare('K_wing',  default=0.6843, types=float)
+        self.options.declare('K_htail', default=0.6843, types=float)
+
+    def setup(self):
+        self.add_input('fuselage_wetted_area',  val=0.60,  units='m**2')
+        self.add_input('wing_root_chord',        val=0.278, units='m')
+        self.add_input('wing_section_tc',        val=0.15,  units='unitless')
+        self.add_input('fus_max_width',          val=0.155, units='m')
+        self.add_input('wing_span',              val=1.8,   units='m')
+        self.add_input('wing_taper_ratio',       val=0.8,   units='unitless')
+        self.add_input('htail_c_root_at_fus',    val=0.0,   units='m')
+        self.add_input('htail_tc_at_fus',        val=0.0,   units='unitless')
+
+        self.add_output('fuselage_exposed_wetted_area', val=0.585, units='m**2')
+
+        self.declare_partials('*', '*', method='cs')
+
+    def compute(self, inputs, outputs):
+        K_w = self.options['K_wing']
+        K_h = self.options['K_htail']
+
+        c_root  = inputs['wing_root_chord']
+        tc      = inputs['wing_section_tc']
+        d_fus   = inputs['fus_max_width']
+        b       = inputs['wing_span']
+        taper   = inputs['wing_taper_ratio']
+        c_htail = inputs['htail_c_root_at_fus']
+        tc_h    = inputs['htail_tc_at_fus']
+
+        c_fus   = c_root * (1.0 - (1.0 - taper) * d_fus / b)
+
+        wing_cutout  = 2.0 * K_w * tc   * c_fus**2
+        htail_cutout = 2.0 * K_h * tc_h * c_htail**2
+
+        outputs['fuselage_exposed_wetted_area'] = (
+            inputs['fuselage_wetted_area'] - wing_cutout - htail_cutout
+        )
 
 
 def add_load_factor_subsystems(prob):
@@ -640,9 +733,11 @@ def add_load_factor_subsystems(prob):
     fixed.add_output('constraint_temperature',     val=CRUISE_TEMPERATURE_K,      units='K',
                      desc='Static temperature at the constraint flight condition')
     fixed.add_output('alpha_max_deg',    val=ALPHA_MAX_DEG,       units='deg',
-                     desc='Max operating alpha [deg] -- shared by Nz (LongitudinalLoadFactor) and M_DD (MachCriticalComp)')
+                     desc='Max operating alpha [deg] -- used by Nz (LongitudinalLoadFactor)')
     fixed.add_output('mach_upper_bound', val=MACH_UPPER_BOUND,    units='unitless',
                      desc='M_crit check Mach: DASH_MACH + M_CRIT_SAFETY_MARGIN; constraint M_crit >= this value')
+    fixed.add_output('nz_min',           val=NZ_MIN,              units='unitless',
+                     desc='Min longitudinal load factor -- used by MachCriticalComp to derive design CL')
     # ── Wing apex position in the aircraft reference frame ────────────────────
     # Frame: origin at nose tip; x positive AFT (fuselage station); y positive
     # starboard; z positive DOWN.  These are geometric inputs -- promote to DVs
@@ -655,6 +750,20 @@ def add_load_factor_subsystems(prob):
 
     # ── H-tail VTP geometry: span/chord -> area, AR, fuselage_vtp_span_ratio ──
     model.add_subsystem('htail_geom', HTailGeometry(), promotes=['*'])
+
+    # VTP wetted area: 2 panels × 2 sides, wingtip-mounted (no fuselage cutout).
+    # Formula matches project Swet convention: (S_planform - S_inside_fuselage) × 2
+    # per panel, × 2 panels. Feeds trajectory parameter 'vtp_wetted_area' so that
+    # VTP span DV changes propagate to mission parasite drag.
+    model.add_subsystem(
+        'vtp_wetted_area_comp',
+        om.ExecComp(
+            'vtp_wetted_area = 4.0 * vtp_area',
+            vtp_area={'val': 0.08, 'units': 'm**2'},
+            vtp_wetted_area={'val': 0.32, 'units': 'm**2'},
+        ),
+        promotes=['*'],
+    )
 
     # ── Parametric fuselage geometry: report-only until drag/CG integration ──
     model.add_subsystem(
@@ -683,7 +792,7 @@ def add_load_factor_subsystems(prob):
         ],
     )
 
-    # ── Wing surface: Scholz AR correction + Polhamus + K_wf ─────────────────
+    # ── Wing surface: Scholz AR correction + Polhamus + M_crit ──────────────
     model.add_subsystem(
         'wing_surface', WingSurface(cfg=WING_SURFACE_CFG),
         promotes_inputs=[
@@ -695,8 +804,10 @@ def add_load_factor_subsystems(prob):
             ('dihedral_deg',     'aircraft:wing:dihedral'),
             ('endplate_span',    av.Aircraft.VerticalTail.SPAN),
             'design_mach',
-            'alpha_max_deg',
             'mach_upper_bound',
+            'nz_min',
+            'aircraft_mass',
+            'dynamic_pressure',
             'wing_x_apex',
             'wing_z_apex',
         ],
@@ -704,7 +815,6 @@ def add_load_factor_subsystems(prob):
             ('surface_CL_alpha', 'wing_CL_alpha'),
             ('k_eff',            'k_h'),
             'AR_eff',
-            'K_wf',
             'M_DD',
             'M_crit',
             'mach_crit_margin',
@@ -717,6 +827,24 @@ def add_load_factor_subsystems(prob):
             'wing_x_mac_c4',
             'wing_le_sweep',
         ],
+    )
+
+    # ── Fuselage exposed wetted area: gross Swet minus wing airfoil cutouts ───
+    # wing_root_chord and wing_section_tc are now available (promoted by wing_surface).
+    model.add_subsystem(
+        'fus_exposed_swet',
+        FuselageExposedWettedAreaComp(
+            K_wing=WING_AIRFOIL.cross_section_area_coeff,
+        ),
+        promotes_inputs=[
+            'fuselage_wetted_area',
+            'wing_root_chord',
+            'wing_section_tc',
+            ('fus_max_width',    'fus_max_width'),
+            ('wing_span',        av.Aircraft.Wing.SPAN),
+            ('wing_taper_ratio', av.Aircraft.Wing.TAPER_RATIO),
+        ],
+        promotes_outputs=['fuselage_exposed_wetted_area'],
     )
 
     # ── VTP surface: Polhamus + CyBetaVtp + CyDeltaRudder ────────────────────
@@ -859,6 +987,9 @@ def add_aeroelasticity_subsystems(prob):
         promotes_outputs=['*'],
     )
     model.connect('wing_CL_alpha', AE.LIFT_CURVE_SLOPE)
+    model.connect('wing_section_tc', AE.STRUCTURAL_THICKNESS_TO_CHORD)
+    model.connect(premission_propulsion_var(SmallTurbojetVariables.MASS), AE.ENGINE_MASS)
+    model.connect(av.Mission.TOTAL_FUEL, AE.FUEL_MASS)
 
     # ── Step 4: aeroelastic AR wash-in correction (diagnostic, not optimizer DV)
     # Below divergence the wing twists nose-up (wash-in since EA is aft of AC),
@@ -943,6 +1074,204 @@ def write_payload_range_report(prob):
         writer.writerows(rows)
 
     return csv_path
+
+
+def write_spajeti_aircraft_3d_report(prob):
+    """Write a lightweight SpaJeti-specific 3D geometry report for the dashboard."""
+    reports_dir = Path(prob.get_reports_dir(force=True))
+    html_path = reports_dir / 'spajeti_aircraft_3d.html'
+    subsystems_dir = reports_dir / 'subsystems'
+    subsystem_link_path = subsystems_dir / 'spajeti_3d.md'
+
+    def _num(value, default):
+        return default if isinstance(value, str) else float(np.atleast_1d(value)[0])
+
+    fus_len = _num(safe_get(prob, av.Aircraft.Fuselage.LENGTH, 'm'), 2.0)
+    fus_w = _num(safe_get(prob, 'fus_max_width', 'm'), FUSELAGE_MAX_WIDTH_M)
+    fus_h = _num(safe_get(prob, 'fus_max_height', 'm'), FUSELAGE_MAX_HEIGHT_M)
+
+    wing_span = _num(safe_get(prob, av.Aircraft.Wing.SPAN, 'm'), 1.8)
+    wing_area = _num(safe_get(prob, av.Aircraft.Wing.AREA, 'm**2'), 0.45)
+    wing_taper = _num(safe_get(prob, av.Aircraft.Wing.TAPER_RATIO), 0.6)
+    wing_sweep = math.radians(_num(safe_get(prob, av.Aircraft.Wing.SWEEP, 'deg'), 0.0))
+    wing_dihedral = math.radians(_num(safe_get(prob, av.Aircraft.Wing.DIHEDRAL, 'deg'), 0.0))
+    wing_cr = 2.0 * wing_area / (wing_span * (1.0 + wing_taper))
+    wing_ct = wing_cr * wing_taper
+    wing_semispan = 0.5 * wing_span
+
+    vtp_span = _num(safe_get(prob, av.Aircraft.VerticalTail.SPAN, 'm'), VTP_SPAN_INITIAL_M)
+    vtp_area = _num(safe_get(prob, av.Aircraft.VerticalTail.AREA, 'm**2'), 0.08)
+    vtp_taper = _num(safe_get(prob, av.Aircraft.VerticalTail.TAPER_RATIO), 0.4)
+    vtp_sweep = math.radians(_num(safe_get(prob, av.Aircraft.VerticalTail.SWEEP, 'deg'), 20.0))
+    vtp_cr = 2.0 * vtp_area / (vtp_span * (1.0 + vtp_taper))
+    vtp_ct = vtp_cr * vtp_taper
+
+    engine_diameter = _num(
+        safe_get(prob, premission_propulsion_var(SmallTurbojetVariables.DIAMETER), 'm'),
+        0.12,
+    )
+    engine_length = 0.35 * engine_diameter
+
+    def p(x_aft, y_right, z_down):
+        # A-Frame: x = aircraft aft/forward, y = up, z = right.
+        return f'{x_aft - 0.5 * fus_len:.5f} {-z_down:.5f} {y_right:.5f}'
+
+    def tri(a, b, c, color, opacity='0.82'):
+        return (
+            f'<a-triangle vertex-a="{a}" vertex-b="{b}" vertex-c="{c}" '
+            f'color="{color}" opacity="{opacity}" side="double"></a-triangle>'
+        )
+
+    def quad(a, b, c, d, color, opacity='0.82'):
+        return tri(a, b, c, color, opacity) + '\n' + tri(a, c, d, color, opacity)
+
+    def fuselage_entities(n_x=18, n_t=24):
+        x_norm = np.linspace(0.0, 1.0, n_x)
+        widths, heights = superellipse_width_height_distribution(
+            x_norm,
+            fus_w,
+            fus_h,
+            FUSELAGE_NOSE_LENGTH_FRACTION,
+            FUSELAGE_TAIL_LENGTH_FRACTION,
+            FUSELAGE_BASE_WIDTH_FRACTION,
+            FUSELAGE_BASE_HEIGHT_FRACTION,
+        )
+        theta = np.linspace(0.0, 2.0 * np.pi, n_t, endpoint=False)
+        rings = []
+        for x_frac, width, height in zip(x_norm, widths, heights):
+            y_vals, z_vals = _superellipse_surface_points(
+                width,
+                height,
+                FUSELAGE_SUPERELLIPSE_EXPONENT,
+                theta,
+            )
+            rings.append([p(x_frac * fus_len, y, z_down) for y, z_down in zip(y_vals, z_vals)])
+
+        faces = []
+        for i in range(n_x - 1):
+            for j in range(n_t):
+                jp = (j + 1) % n_t
+                faces.append(quad(
+                    rings[i][j],
+                    rings[i + 1][j],
+                    rings[i + 1][jp],
+                    rings[i][jp],
+                    '#c9ced6',
+                    '0.92',
+                ))
+        return '\n'.join(faces)
+
+    def wing_panel(sign):
+        y0 = 0.0
+        yt = sign * wing_semispan
+        x_le_root = WING_X_APEX_M
+        z_root = WING_Z_APEX_M
+        x_le_tip = x_le_root + 0.25 * wing_cr + abs(yt) * math.tan(wing_sweep) - 0.25 * wing_ct
+        z_tip = z_root - abs(yt) * math.tan(wing_dihedral)
+        return quad(
+            p(x_le_root, y0, z_root),
+            p(x_le_root + wing_cr, y0, z_root),
+            p(x_le_tip + wing_ct, yt, z_tip),
+            p(x_le_tip, yt, z_tip),
+            '#3b82f6',
+        )
+
+    def vtp_panel(y_sign, z_sign):
+        y = y_sign * wing_semispan
+        x_le_root = WING_X_APEX_M + 0.25 * wing_cr + wing_semispan * math.tan(wing_sweep) - 0.25 * wing_ct
+        z_mid = WING_Z_APEX_M - wing_semispan * math.tan(wing_dihedral)
+        z_tip = z_mid + z_sign * 0.5 * vtp_span
+        x_le_tip = x_le_root + 0.25 * vtp_cr + 0.5 * vtp_span * math.tan(vtp_sweep) - 0.25 * vtp_ct
+        return quad(
+            p(x_le_root, y, z_mid),
+            p(x_le_root + vtp_cr, y, z_mid),
+            p(x_le_tip + vtp_ct, y, z_tip),
+            p(x_le_tip, y, z_tip),
+            '#0f766e',
+            '0.88',
+        )
+
+    entities = '\n'.join([
+        fuselage_entities(),
+        wing_panel(1.0),
+        wing_panel(-1.0),
+        vtp_panel(1.0, 1.0),
+        vtp_panel(1.0, -1.0),
+        vtp_panel(-1.0, 1.0),
+        vtp_panel(-1.0, -1.0),
+        '<a-cylinder radius="{:.5f}" height="{:.5f}" rotation="0 0 90" '
+        'position="{}" color="#111827" opacity="0.90" segments-radial="32"></a-cylinder>'.format(
+            0.42 * engine_diameter,
+            engine_length,
+            p(fus_len + 0.5 * engine_length, 0.0, 0.0),
+        ),
+    ])
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SpaJeti 3D Geometry</title>
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+  <style>
+    body {{ margin: 0; background: #eef3f8; font-family: Arial, sans-serif; }}
+    .note {{
+      position: fixed; left: 16px; top: 12px; z-index: 10;
+      background: rgba(255,255,255,0.88); padding: 10px 12px; border-radius: 6px;
+      color: #1f2937; font-size: 13px; line-height: 1.35;
+    }}
+    .fallback {{
+      position: fixed; right: 16px; bottom: 16px; z-index: 10;
+      width: 300px; max-width: 34vw;
+      background: rgba(255,255,255,0.88); padding: 8px; border-radius: 6px;
+      color: #1f2937; font-size: 12px;
+    }}
+    .fallback svg {{ display: block; width: 100%; height: auto; }}
+  </style>
+</head>
+<body>
+  <div class="note">
+    <b>SpaJeti optimized geometry</b><br>
+    b = {wing_span:.3f} m, VTP span = {vtp_span:.3f} m, fuselage = {fus_len:.3f} m<br>
+    Fuselage uses the rounded-square superellipse mesh. VTPs mirror up/down from each wingtip.
+    Dark aft disk is the small turbojet nozzle.
+  </div>
+  <div class="fallback">
+    <b>Plan view fallback</b>
+    <svg viewBox="0 0 300 150" aria-label="SpaJeti H-wing planform fallback">
+      <rect x="0" y="0" width="300" height="150" fill="#dbeafe"/>
+      <ellipse cx="150" cy="75" rx="58" ry="20" fill="#c9ced6" stroke="#94a3b8"/>
+      <polygon points="90,70 210,70 238,62 238,68 210,78 90,78 62,68 62,62" fill="#3b82f6" opacity="0.82"/>
+      <polygon points="56,51 68,51 74,75 68,99 56,99 50,75" fill="#0f766e" opacity="0.88"/>
+      <polygon points="232,51 244,51 250,75 244,99 232,99 226,75" fill="#0f766e" opacity="0.88"/>
+      <circle cx="211" cy="75" r="5" fill="#111827" opacity="0.90"/>
+    </svg>
+  </div>
+  <a-scene background="color: #dbeafe">
+    <a-camera position="0 1.8 7.5" rotation="-12 0 0"></a-camera>
+    <a-entity light="type: ambient; intensity: 0.62"></a-entity>
+    <a-entity light="type: directional; intensity: 0.72" position="-2 4 3"></a-entity>
+    <a-entity id="aircraft" rotation="0 -35 0">
+{entities}
+    </a-entity>
+    <a-grid color="#94a3b8" opacity="0.35" position="0 -0.45 0"></a-grid>
+  </a-scene>
+</body>
+</html>
+"""
+    html_path.write_text(html, encoding='utf-8')
+    subsystems_dir.mkdir(parents=True, exist_ok=True)
+    subsystem_link_path.write_text(
+        '# SpaJeti 3D Geometry\n\n'
+        'The SpaJeti H-wing geometry report is also available as a standalone '
+        'interactive HTML file:\n\n'
+        '[Open SpaJeti 3D Geometry](../spajeti_aircraft_3d.html)\n\n'
+        'If the dashboard was launched with an older Aviary entry point and the '
+        'Results tab is missing, use this subsystem report link or open '
+        '`reports/spajeti_aircraft_3d.html` directly.\n',
+        encoding='utf-8',
+    )
+    return html_path
 
 
 def add_cg_estimation(prob, cg_est):
@@ -1113,7 +1442,7 @@ def build_problem():
     add_cg_estimation(prob, cg_est)
     prob.link_phases()
 
-    prob.add_driver(OPTIMIZER, max_iter=500, verbosity=av.Verbosity.VERBOSE)
+    prob.add_driver(OPTIMIZER, max_iter=150, verbosity=av.Verbosity.VERBOSE)
     if OPTIMIZER == 'IPOPT':
         prob.driver.opt_settings['mu_strategy'] = 'adaptive'
         prob.driver.opt_settings['mu_init'] = 0.1
@@ -1128,6 +1457,10 @@ def build_problem():
     prob.model.add_design_var(
         av.Aircraft.Wing.SPAN,
         lower=1.34, upper=2.0, units='m', ref=1.8,
+    )
+    prob.model.add_design_var(
+        av.Aircraft.Wing.AREA,
+        lower=0.40, upper=0.75, units='m**2', ref=0.45,
     )
     prob.model.add_design_var(
         av.Aircraft.VerticalTail.SPAN,
@@ -1216,29 +1549,32 @@ def print_parasite_drag_detail(prob):
     print(f'  Base drag (fus aft): EXCLUDED  (engine exhaust fills base)')
     print('=' * 70)
 
-    _VTP_AVG_CHORD = getattr(av.Aircraft.VerticalTail, 'AVERAGE_CHORD',
-                              'aircraft:vertical_tail:average_chord')
-
     wing_area       = safe_get(prob, av.Aircraft.Wing.AREA,                    'm**2')
     wing_c_mac      = safe_get(prob, 'wing_c_mac',                              'm')
     wing_root_chord = safe_get(prob, 'wing_root_chord',                         'm')
     wing_sweep      = safe_get(prob, av.Aircraft.Wing.SWEEP,                   'deg')
     wing_tc         = safe_get(prob, 'wing_section_tc')
 
-    vtp_area        = safe_get(prob, av.Aircraft.VerticalTail.AREA,            'm**2')
-    vtp_avg_chord   = safe_get(prob, _VTP_AVG_CHORD,                           'm')
+    vtp_area        = safe_get(prob, 'vtp_area',                               'm**2')
+    vtp_avg_chord   = safe_get(prob, 'vtp_avg_chord',                           'm')
     vtp_sweep       = safe_get(prob, av.Aircraft.VerticalTail.SWEEP,           'deg')
     vtp_tc          = safe_get(prob, av.Aircraft.VerticalTail.THICKNESS_TO_CHORD)
 
     fus_length      = safe_get(prob, av.Aircraft.Fuselage.LENGTH,              'm')
-    fus_wetted      = safe_get(prob, 'fuselage_wetted_area',                   'm**2')
+    fus_wetted      = safe_get(prob, 'fuselage_exposed_wetted_area',           'm**2')
     fus_equiv_diam  = safe_get(prob, 'fuselage_equivalent_diameter',           'm')
 
-    if any(isinstance(v, str) for v in (
-        wing_area, wing_c_mac, wing_root_chord, wing_sweep, wing_tc,
-        vtp_area, vtp_avg_chord, vtp_sweep, vtp_tc, fus_length, fus_wetted, fus_equiv_diam,
-    )):
-        print('  (one or more geometry values not available -- skipping)')
+    _missing = {
+        'wing_area':       wing_area,       'wing_c_mac':    wing_c_mac,
+        'wing_root_chord': wing_root_chord, 'wing_sweep':    wing_sweep,
+        'wing_tc':         wing_tc,         'vtp_area':      vtp_area,
+        'vtp_avg_chord':   vtp_avg_chord,   'vtp_sweep':     vtp_sweep,
+        'vtp_tc':          vtp_tc,          'fus_length':    fus_length,
+        'fus_wetted':      fus_wetted,      'fus_equiv_diam': fus_equiv_diam,
+    }
+    _failed = [k for k, v in _missing.items() if isinstance(v, str)]
+    if _failed:
+        print(f'  geometry values not available: {", ".join(_failed)} -- skipping')
         return
 
     # ── Wetted areas ───────────────────────────────────────────────────────────
@@ -1340,9 +1676,9 @@ def print_parasite_drag_detail(prob):
     print(f'    R_wf = {r_wf:.4f}  (DATCOM Fig 4.1, Re_fus = {re_fus:.3e}, M = {mach:.3f})')
     print(f'    VTP×2 Swet = 4 × Aircraft.VerticalTail.AREA  '
           f'(2 panels × 2 sides, no cutout -- conservative)')
-    print(f'    Wing buried panel at root ≈ {s_buried:.5f} m²  '
+    print(f'    Wing buried panel at root approx {s_buried:.5f} m²  '
           f'(d_fus/2 × c_root)  [d_fus = FUSELAGE_EQUIV_DIAMETER_M = {FUSELAGE_EQUIV_DIAMETER_M:.4f} m]')
-    print(f'    Fuselage Swet / d_eq / fineness from SuperellipseFuselageGeometry (live)')
+    print(f'    Fuselage Swet = fuselage_exposed_wetted_area (superellipse gross minus 2x wing airfoil holes)')
     print(f'    Fuselage d_eq (model) = {fus_equiv_diam:.4f} m,  FUSELAGE_EQUIV_DIAMETER_M = {FUSELAGE_EQUIV_DIAMETER_M:.4f} m'
           f'  (should match),  fineness l/d = {fus_fineness:.1f}')
 
@@ -1358,7 +1694,7 @@ def main():
     print('HORIZONTAL-TAIL SMALL UAV RANGE OPTIMIZATION')
     print(f'  Version         : v{MODEL_VERSION}  (SpaJeti v1.0.0 H-wing)')
     print('  Layout          : H-tail (wing + twin-VTP endplates) + small turbojet')
-    print('  Design variables: wing span, VTP span, wing section t/c, scaled SLS thrust, phase Mach')
+    print('  Design variables: wing span, wing area, VTP span, wing section t/c, scaled SLS thrust, phase Mach')
     print('  Constraints     : Ny >= 7, Nz >= 7 (550 km/h, 5 km), T/W >= 1.5, fuel,')
     print(f'                    M_crit >= {MACH_UPPER_BOUND:.2f} (DASH + {M_CRIT_SAFETY_MARGIN:.2f}),')
     print(f'                    V_div >= {AERO_REQUIRED_SPEED_MS:.1f} m/s, lambda_max(design) <= 0')
@@ -1374,6 +1710,7 @@ def main():
 
     remove_dashboard_incompatible_recorder(prob)
     payload_range_csv = write_payload_range_report(prob)
+    spajeti_3d_html = write_spajeti_aircraft_3d_report(prob)
 
     print('\n' + '=' * 70)
     print('OPTIMIZATION RESULTS')
@@ -1389,10 +1726,15 @@ def main():
     print_result('Wing Section t/c (M_crit DV)', safe_get(prob, 'wing_section_tc'))
     print_result('Wing AR_eff (endplate)', safe_get(prob, 'AR_eff'))
     print_result('Wing k_h (endplate factor)', safe_get(prob, 'k_h'))
-    print_result('Wing K_wf (fuselage factor)', safe_get(prob, 'K_wf'))
     print_result('VTP Span',          safe_get(prob, av.Aircraft.VerticalTail.SPAN, 'm'), 'm')
     print_result('VTP Area',          safe_get(prob, av.Aircraft.VerticalTail.AREA, 'm**2'), 'm^2')
     print_result('VTP Aspect Ratio',  safe_get(prob, av.Aircraft.VerticalTail.ASPECT_RATIO))
+    print_result('VTP tip mass (2 panels/wingtip)', safe_get(prob, AE.VTP_TIP_MASS, 'kg'), 'kg')
+    print_result(
+        'VTP tip pitch inertia',
+        safe_get(prob, AE.VTP_TIP_PITCH_INERTIA, 'kg*m**2'),
+        'kg*m^2',
+    )
     print_result('H-Tail Area',       safe_get(prob, av.Aircraft.HorizontalTail.AREA, 'm**2'), 'm^2')
     print_result('Fuselage Length',   safe_get(prob, av.Aircraft.Fuselage.LENGTH, 'm'), 'm')
     print_result('Fuselage S_plf',    safe_get(prob, 'fuselage_planform_area', 'm**2'), 'm^2')
@@ -1416,7 +1758,7 @@ def main():
 
     print('\nLoad Factors (550 km/h, 5 km ISA):')
     print('-' * 70)
-    print_result('Wing CL_alpha (endplate+K_wf)', safe_get(prob, 'wing_CL_alpha'), '/rad')
+    print_result('Wing CL_alpha (endplate, wing-alone)', safe_get(prob, 'wing_CL_alpha'), '/rad')
     print_result('VTP CL_alpha_v',  safe_get(prob, 'CL_alpha_v'), '/rad')
     print_result('CY_beta_vtp',     safe_get(prob, 'CY_beta_vtp'), '/rad')
     print_result('CY_delta_r',      safe_get(prob, 'CY_delta_r'), '/rad')
@@ -1424,9 +1766,9 @@ def main():
     print_result('Nz (vertical)',    safe_get(prob, 'Nz'), f'[min {NZ_MIN}]')
     print_result('CL (at Nz point)', safe_get(prob, 'CL'), '')
     print_result('CDi (Roskam Eq 4.8, no twist)', safe_get(prob, 'CDi'), '')
-    print_result('  e_span_eff (wired to FLOPS)',
+    print_result('  e_span_eff (mission CDI)',
                  safe_get(prob, av.Aircraft.Wing.SPAN_EFFICIENCY_FACTOR), '[AR_eff-corrected]')
-    print_result('CDi_fus (Roskam Eq 4.33)',       safe_get(prob, 'CDi_fus'), '[report-only]')
+    print_result('CDi_fus (Roskam Eq 4.33)',       safe_get(prob, 'CDi_fus'), '[mission included]')
     print_result('  CDi_fus base-area term',       safe_get(prob, 'CDi_fus_base_area_term'), '')
     print_result('  CDi_fus planform term',        safe_get(prob, 'CDi_fus_planform_term'), '')
     print_result('  eta (l/d interp, Fig 4.32)',   safe_get(prob, 'eta_finite_cylinder'), '')
@@ -1464,6 +1806,51 @@ def main():
     print_result('Flutter speed V_f (QS bisection)', flutter_v, 'm/s [informational]')
     print_result('Flutter speed margin',           flutter_m,  'm/s [informational]')
     print_result('lambda_max at design [max 0]',   lambda_max, '1/s')
+    print_result(
+        'Beam-modal f_bend',
+        safe_get(prob, AE.BEAM_MODAL_BENDING_FREQUENCY, 'Hz'),
+        'Hz [Step 4]',
+    )
+    print_result(
+        'Beam-modal f_torsion',
+        safe_get(prob, AE.BEAM_MODAL_TORSION_FREQUENCY, 'Hz'),
+        'Hz [Step 4]',
+    )
+    print_result(
+        'Beam-modal lambda_max',
+        safe_get(prob, AE.BEAM_MODAL_MAX_REAL_EIGENVALUE_AT_DESIGN, '1/s'),
+        '1/s [Step 4]',
+    )
+    print_result(
+        'Beam-modal flutter speed',
+        safe_get(prob, AE.BEAM_MODAL_FLUTTER_SPEED, 'm/s'),
+        'm/s [Step 4]',
+    )
+    print_result(
+        'Beam-modal flutter margin',
+        safe_get(prob, AE.BEAM_MODAL_FLUTTER_SPEED_MARGIN, 'm/s'),
+        'm/s [Step 4]',
+    )
+    print_result(
+        'Beam-modal PK speed',
+        safe_get(prob, AE.BEAM_MODAL_PK_FLUTTER_SPEED, 'm/s'),
+        'm/s [Step 4]',
+    )
+    print_result(
+        'Beam-modal PK margin',
+        safe_get(prob, AE.BEAM_MODAL_PK_FLUTTER_SPEED_MARGIN, 'm/s'),
+        'm/s [Step 4]',
+    )
+    print_result(
+        'Beam-modal PK freq',
+        safe_get(prob, AE.BEAM_MODAL_PK_FLUTTER_FREQUENCY, 'Hz'),
+        'Hz [Step 4]',
+    )
+    print_result(
+        'Beam-modal PK converged',
+        safe_get(prob, AE.BEAM_MODAL_PK_CONVERGED),
+        '[1=yes]',
+    )
     print_result('PK flutter speed (Theodorsen)',   pk_v,       'm/s [informational]')
     print_result('PK flutter speed margin',         pk_m,       'm/s [informational]')
     print()
@@ -1509,6 +1896,7 @@ def main():
     print_result('Payload',           safe_get(prob, av.Aircraft.CrewPayload.TOTAL_PAYLOAD_MASS, 'kg'), 'kg')
     if payload_range_csv:
         print_result('Payload/Range CSV', str(payload_range_csv))
+    print_result('SpaJeti 3D dashboard HTML', str(spajeti_3d_html))
 
     print('\nMass Breakdown:')
     print('-' * 70)
@@ -1540,6 +1928,46 @@ def main():
     if PRINT_AERO_DETAIL:
         print_aero_detail(prob)
         print_parasite_drag_detail(prob)
+
+    # ── Constraint satisfaction check (actual physical values) ─────────────
+    # IMPORTANT: The Aviary opt_report.html and OpenMDAO driver table show
+    # SCALED values (val/ref) against UNSCALED physical bounds.  Any DV or
+    # constraint with ref != 1 will appear violated there even when satisfied.
+    # Example proof: wing_section_tc shows ~0.62 with upper=0.18 in the table,
+    # but actual t/c = 0.62 * ref(0.15) = 0.093 -- within [0.05, 0.18].
+    # The values below come from prob.get_val() (actual unscaled model values).
+    print('\n' + '=' * 70)
+    print('CONSTRAINT SATISFACTION (actual physical values from prob.get_val)')
+    print('  opt_report.html shows val/ref -- trust THIS table, not that one.')
+    print('=' * 70)
+
+    def _ccheck(label, val, limit, sense='>=', unit=''):
+        if isinstance(val, str):
+            print(f'  {label:<46}  {"not available"}')
+            return
+        ok = (val >= limit) if sense == '>=' else (val <= limit)
+        status = 'OK' if ok else '*** VIOLATION ***'
+        print(f'  {label:<46} = {val:>10.4f} {unit}  [{sense}{limit}]  {status}')
+
+    _ccheck(f'Ny  (lateral load factor)',       safe_get(prob, 'Ny'),                       NY_MIN)
+    _ccheck(f'Nz  (longitudinal load factor)',   safe_get(prob, 'Nz'),                       NZ_MIN)
+    _ccheck(f'mach_crit_margin',                 safe_get(prob, 'mach_crit_margin'),          0.0)
+    _ccheck(f'divergence speed margin',
+            safe_get(prob, AE.DIVERGENCE_SPEED_MARGIN, 'm/s'),                               0.0, unit='m/s')
+    _ccheck(f'lambda_max at design point',
+            safe_get(prob, AE.MAX_REAL_EIGENVALUE_AT_DESIGN, '1/s'),                         0.0, sense='<=', unit='1/s')
+    _sls = safe_get(prob, av.Aircraft.Engine.SCALED_SLS_THRUST, 'N')
+    _sls_min = TW_MIN * MAX_TAKEOFF_MASS_KG * 9.80665
+    _ccheck(f'SLS thrust',                       _sls,                                        _sls_min, unit='N')
+    _ccheck(f'fuel budget margin',               safe_get(prob, FUEL_BUDGET_MARGIN, 'kg'),   0.0, unit='kg')
+    _eng = safe_get(prob, premission_propulsion_var(SmallTurbojetVariables.MASS), 'kg')
+    _ccheck(f'engine mass',                      _eng,                                        engine_mass_upper_kg, sense='<=', unit='kg')
+    print()
+    print('  DVs (opt_report shows val/ref; actual physical values below):')
+    _ccheck(f'  wing span',   safe_get(prob, av.Aircraft.Wing.SPAN,            'm'),   1.34, unit='m')
+    _ccheck(f'  wing area',   safe_get(prob, av.Aircraft.Wing.AREA,            'm**2'), 0.40, unit='m^2')
+    _ccheck(f'  VTP span',    safe_get(prob, av.Aircraft.VerticalTail.SPAN,    'm'),   0.15, unit='m')
+    _ccheck(f'  wing_section_tc', safe_get(prob, 'wing_section_tc'),                   0.05, unit='')
 
     print('\n' + '=' * 70)
     print('OPTIMIZATION COMPLETE')

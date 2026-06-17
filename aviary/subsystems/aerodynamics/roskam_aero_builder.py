@@ -53,6 +53,16 @@ class RoskamAeroBuilder(SubsystemBuilder):
             Dynamic.Atmosphere.STATIC_PRESSURE,
             Dynamic.Atmosphere.TEMPERATURE,
             Dynamic.Vehicle.MASS,
+            'wing_CL_alpha',
+            'fuselage_base_area',
+            'fuselage_planform_area',
+            'fuselage_fineness_ratio',
+            # Custom geometry variables not matched by aircraft:* wildcard:
+            # VTP (from HTailGeometry) and fuselage exposed Swet (from
+            # FuselageExposedWettedAreaComp -- superellipse gross minus cutouts).
+            'vtp_area',
+            'vtp_wetted_area',
+            'fuselage_exposed_wetted_area',
         ]
 
     def mission_outputs(self, aviary_inputs=None, user_options=None, subsystem_options=None):
@@ -62,10 +72,12 @@ class RoskamAeroBuilder(SubsystemBuilder):
         ]
 
     def get_parameters(self, aviary_inputs=None, user_options=None, subsystem_options=None):
-        # Aircraft:* variables are already Aviary trajectory parameters.
-        # Only declare Wing.AREA explicitly to follow the SimpleAeroBuilder
-        # pattern — Aviary needs the shape / units hint for this one.
+        # All static (non-time-varying) inputs to RoskamMissionAeroGroup must be
+        # declared here so Aviary/Dymos creates trajectory parameters and promotes
+        # them to model scope, where they auto-connect to pre_mission geometry
+        # outputs and optimizer design variables.
         return {
+            # ── Wing scalars ──────────────────────────────────────────────────
             Aircraft.Wing.AREA: {
                 'shape': (1,),
                 'static_target': True,
@@ -75,6 +87,11 @@ class RoskamAeroBuilder(SubsystemBuilder):
                 'shape': (1,),
                 'static_target': True,
                 'units': 'unitless',
+            },
+            Aircraft.Wing.SPAN: {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'ft',
             },
             Aircraft.Wing.SPAN_EFFICIENCY_FACTOR: {
                 'shape': (1,),
@@ -86,7 +103,85 @@ class RoskamAeroBuilder(SubsystemBuilder):
                 'static_target': True,
                 'units': 'deg',
             },
-            Aircraft.Wing.TAPER_RATIO: {
+            Aircraft.Wing.THICKNESS_TO_CHORD: {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'unitless',
+            },
+            Aircraft.Wing.WETTED_AREA: {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'ft**2',
+            },
+            # ── Vertical tail scalars ─────────────────────────────────────────
+            # vtp_area and vtp_wetted_area use custom names (not aircraft:* Aviary
+            # standard) so they connect to HTailGeometry's live outputs at model
+            # scope rather than the FLOPS pre-mission static IndepVarComp values.
+            # This ensures VTP span DV changes propagate to mission parasite drag.
+            'vtp_area': {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'm**2',
+            },
+            'vtp_wetted_area': {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'm**2',
+            },
+            Aircraft.VerticalTail.SPAN: {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'ft',
+            },
+            Aircraft.VerticalTail.SWEEP: {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'deg',
+            },
+            Aircraft.VerticalTail.THICKNESS_TO_CHORD: {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'unitless',
+            },
+            # ── Fuselage scalars ──────────────────────────────────────────────
+            Aircraft.Fuselage.LENGTH: {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'ft',
+            },
+            Aircraft.Fuselage.MAX_WIDTH: {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'ft',
+            },
+            # fuselage_exposed_wetted_area replaces the FLOPS/CSV static
+            # aircraft:fuselage:wetted_area.  It is computed by
+            # FuselageExposedWettedAreaComp (superellipse gross minus wing
+            # airfoil cross-section cutouts) and is live w.r.t. wing DVs.
+            'fuselage_exposed_wetted_area': {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'm**2',
+            },
+            # ── Custom (non-aircraft:*) parameters ────────────────────────────
+            # Computed by add_load_factor_subsystems at model scope and promoted
+            # by name, so they auto-connect via the trajectory parameter promote.
+            'wing_CL_alpha': {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'unitless',
+            },
+            'fuselage_base_area': {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'm**2',
+            },
+            'fuselage_planform_area': {
+                'shape': (1,),
+                'static_target': True,
+                'units': 'm**2',
+            },
+            'fuselage_fineness_ratio': {
                 'shape': (1,),
                 'static_target': True,
                 'units': 'unitless',

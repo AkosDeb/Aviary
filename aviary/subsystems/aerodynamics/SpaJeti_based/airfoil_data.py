@@ -58,6 +58,14 @@ class AirfoilData:
     max_thickness_location: float
     leading_edge_radius_ratio: float
     re_ref:           float
+    # Airfoil cross-sectional area coefficient K, used in A = K * (t/c) * c².
+    # For NACA 4-digit series K is analytically exact from the standard thickness
+    # distribution: K = 2 × integral_0^1 of (0.2969√x − 0.126x − 0.3516x² + 0.2843x³ − 0.1015x⁴) dx
+    #                    × (1/0.2)  =  0.6843.
+    # K is a property of the thickness distribution shape only -- independent of t/c.
+    # Used by FuselageExposedWettedAreaComp to compute the fuselage skin hole area at
+    # each wing/tail penetration.
+    cross_section_area_coeff: float = 0.6843
 
 
 # ---------------------------------------------------------------------------

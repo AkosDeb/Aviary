@@ -26,7 +26,7 @@ from aviary.subsystems.propulsion.small_turbojet import SmallTurbojetModel
 from run_horizontal_small_uav import (
     AIRCRAFT_DATA, OUTPUT_ROOT, OUTPUT_DIR, PROBLEM_NAME,
     EMPTY_MASS_KG, FUEL_CAPACITY_KG, MAX_TAKEOFF_MASS_KG,
-    CONSTRAINT_MACH, CONSTRAINT_Q_PA, FUSELAGE_EQUIV_DIAMETER_M,
+    CONSTRAINT_MACH, CONSTRAINT_Q_PA,
     VTP_SPAN_INITIAL_M, NY_MIN, NZ_MIN, TW_MIN,
     apply_aircraft_mass_and_fuel_limits,
     add_load_factor_subsystems,
@@ -65,12 +65,8 @@ prob.set_initial_guesses()
 prob.set_val(av.Aircraft.Design.EMPTY_MASS, EMPTY_MASS_KG, 'kg')
 prob.set_val(av.Aircraft.Design.GROSS_MASS, MAX_TAKEOFF_MASS_KG, 'kg')
 prob.set_val(av.Aircraft.VerticalTail.SPAN, VTP_SPAN_INITIAL_M, 'm')
-prob.set_val('wing_polhamus.mach',              CONSTRAINT_MACH)
-prob.set_val('wing_polhamus.section_lift_slope', 2.0 * np.pi)
-prob.set_val('wing_polhamus.fuselage_diameter', FUSELAGE_EQUIV_DIAMETER_M)
-prob.set_val('vtp_polhamus.mach',               CONSTRAINT_MACH)
-prob.set_val('vtp_polhamus.section_lift_slope',  2.0 * np.pi)
-prob.set_val('vtp_polhamus.fuselage_diameter',   0.0)
+prob.set_val('wing_polhamus.mach', CONSTRAINT_MACH)
+prob.set_val('vtp_polhamus.mach',  CONSTRAINT_MACH)
 prob.set_val('long_load.alpha_max_deg',          12.0)
 
 prob.run_model()
@@ -86,7 +82,6 @@ p('Wing span',          prob.get_val(av.Aircraft.Wing.SPAN,             'm')[0],
 p('Wing AR',            prob.get_val(av.Aircraft.Wing.ASPECT_RATIO)[0])
 p('Wing AR_eff',        prob.get_val('AR_eff')[0])
 p('Wing k_h',           prob.get_val('k_h')[0])
-p('Wing K_wf',          prob.get_val('K_wf')[0])
 p('Wing CL_alpha',      prob.get_val('wing_CL_alpha')[0],               '/rad')
 p('VTP span',           prob.get_val(av.Aircraft.VerticalTail.SPAN,     'm')[0],      'm')
 p('VTP area',           prob.get_val(av.Aircraft.VerticalTail.AREA,     'm**2')[0],   'm²')

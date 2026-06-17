@@ -5,7 +5,7 @@ This document covers the two OpenMDAO components in `lift_curve_slope.py`:
 | Component | Purpose |
 |-----------|---------|
 | `ScholzWingletARCorrection` | Converts H-tail VTP span into an effective wing AR increase (Scholz 2018) |
-| `LiftCurveSlopePolhamus` | Computes 3-D CL_alpha from AR, Mach, sweep, section slope (Roskam Eq. 8.22) |
+| `LiftCurveSlopePolhamus` | Computes wing-alone 3-D CL_alpha from AR, Mach, sweep, t/c (Roskam Eq. 8.22) |
 
 Related documentation:
 
@@ -185,8 +185,12 @@ k_h = 7.08 / 4.09 = 1.73 => AR gain = 3.0 (+69 %)
 
 ### What it computes
 
+Wing-alone lift curve slope — fuselage K_wf is **not** applied here:
+
 ```
-CL_alpha = K_wf * 2*pi*A / [2 + sqrt(A^2*(beta^2 + tan^2(Lc/2)) / k^2 + 4)]
+c_l_alpha = 2*pi * (1 + 0.77*tc)            [Abbott & von Doenhoff thickness correction]
+k         = c_l_alpha / (2*pi)
+CL_alpha  = 2*pi*A / [2 + sqrt(A^2*(beta^2 + tan^2(Lc/2)) / k^2 + 4)]
 ```
 
 ### Terms
@@ -194,8 +198,9 @@ CL_alpha = K_wf * 2*pi*A / [2 + sqrt(A^2*(beta^2 + tan^2(Lc/2)) / k^2 + 4)]
 | Symbol | Meaning | Formula |
 |--------|---------|---------|
 | A | aspect ratio | input; connect AR_eff from ScholzWingletARCorrection |
+| tc | thickness-to-chord ratio | input from `section_tc` (AirfoilConstantsComp) |
 | beta | Prandtl-Glauert factor | sqrt(1 - M^2) |
-| k | section slope ratio | cl_alpha / (2*pi); k=1 for thin-airfoil theory |
+| k | section slope ratio | c_l_alpha / (2*pi) |
 | Lc/2 | semi-chord sweep | derived internally from quarter-chord sweep |
 
 ### Sweep conversion
@@ -215,19 +220,6 @@ tan(Lc/2) = tan(Lc/4) - (1 - lambda) / [A * (1 + lambda)]
 | M=0, sweep=0, k<1 | Helmbold with non-ideal airfoil |
 | M>0, sweep=0, k=1 | Compressibility-corrected Helmbold |
 
-### Wing-fuselage interference factor K_wf
-
-```
-K_wf = 1 + 0.025*(d_f/b) - 0.25*(d_f/b)^2
-CL_alpha_corrected = K_wf * CL_alpha_Polhamus
-```
-
-For a slender UAV fuselage (d_f/b <= 0.15) the correction is below 0.2 % and
-K_wf ~ 1.  It becomes relevant for d_f/b >= 0.2.
-
-> **Apply to the wing instance only.** The VTP `LiftCurveSlopePolhamus`
-> instance must leave `fuselage_diameter = 0` (K_wf = 1 by default).
-
 ### Inputs and outputs
 
 | Variable | Default | Units | Description |
@@ -236,28 +228,28 @@ K_wf ~ 1.  It becomes relevant for d_f/b >= 0.2.
 | `mach` | 0.0 | — | Flight Mach number (subsonic, M < 1) |
 | `sweep_c4_deg` | 0.0 | deg | Quarter-chord sweep Lc/4 |
 | `taper_ratio` | 1.0 | — | lambda = c_tip / c_root |
-| `section_lift_slope` | 2*pi | 1/rad | 2-D airfoil cl_alpha (thin-airfoil: 6.283 /rad) |
+| `thickness_to_chord` | 0.12 | — | Airfoil t/c ratio; used to compute c_l_alpha = 2π(1+0.77·t/c) |
 | `fuselage_diameter` | 0.0 | m | Equiv. fuselage diameter d_f; 0 disables K_wf |
 | `wing_span` | 1.0 | m | Wing span b; only used when fuselage_diameter > 0 |
-| **`CL_alpha`** | — | 1/rad | 3-D lift curve slope with K_wf applied |
-| **`K_wf`** | — | — | Wing-fuselage interference factor (diagnostic) |
-`section_lift_slope` should come from `AirfoilData.cl_alpha_per_rad` via
-`AirfoilConstantsComp`. Other airfoil fields are used by neighboring physics:
-`section_tc` feeds the M_crit check, and `section_max_thickness_location` will
-feed the parasite-drag lifting-surface form factor.
+| **`CL_alpha`** | — | 1/rad | Wing-alone 3-D lift curve slope (K_wf NOT applied) |
+| **`K_wf`** | — | — | Wing-fuselage interference factor (diagnostic only) |
 
-### UAV numerical example (2026-06-08 baseline)
+`thickness_to_chord` is wired from `section_tc` (AirfoilConstantsComp) in `LiftingSurfaceGroup`.
 
-Wing at M = 0.477, AR_eff = 7.08, sweep = 0 deg, lambda = 0.6, d_f = 0.169 m, b = 1.357 m:
+### UAV numerical example (2026-06-15 baseline)
+
+Wing at M = 0.477, AR_eff = 7.08, sweep = 0 deg, lambda = 0.6, t/c = 0.12, d_f = 0.169 m, b = 1.357 m:
 
 ```
-beta  = sqrt(1 - 0.477^2) = sqrt(0.772) = 0.879
-k     = 1.0  (thin-airfoil)
-inner = 7.08^2 * (0.879^2 + 0) / 1^2 + 4 = 50.1 * 0.773 + 4 = 42.7
-CL_alpha_Polhamus = 2*pi*7.08 / (2 + sqrt(42.7)) = 44.5 / 8.53 = 5.22 /rad
-d_f/b = 0.169/1.357 = 0.125 -> K_wf = 1 + 0.025*0.125 - 0.25*0.125^2 = 0.999
-CL_alpha = 0.999 * 5.22 = 5.21 /rad   (code gives 5.206 /rad)
+c_l_alpha = 2*pi * (1 + 0.77*0.12) = 2*pi * 1.0924 = 6.862 /rad
+k         = 6.862 / (2*pi) = 1.0924 / 1.0 = 1.0924... wait, k = c_l_alpha/(2pi) = 1.0924
+beta      = sqrt(1 - 0.477^2) = sqrt(0.7724) = 0.879
+inner     = 7.08^2 * (0.879^2 + 0) / 1.0924^2 + 4 = 50.1 * 0.773 / 1.193 + 4 = 32.5 + 4 = 36.5
+CL_alpha  = 2*pi*7.08 / (2 + sqrt(36.5)) = 44.5 / (2 + 6.04) = 44.5 / 8.04 = 5.53 /rad
+K_wf      = 1 + 0.025*0.125 - 0.25*0.125^2 = 0.999  (diagnostic only — not applied)
 ```
+
+Compared to t/c = 0 (thin airfoil, k = 1): CL_alpha ≈ 5.22 /rad → thickness adds ~6 % at t/c = 0.12.
 
 ---
 
@@ -287,9 +279,9 @@ model.add_subsystem('endplate_ar',
     promotes_outputs=['AR_eff', 'k_h'],
 )
 
-# Wing CL_alpha (uses AR_eff)
+# Wing CL_alpha (uses AR_eff; section_tc from AirfoilConstantsComp feeds thickness_to_chord)
 model.add_subsystem('wing_polhamus', LiftCurveSlopePolhamus(),
-    promotes_inputs=[('aspect_ratio', 'AR_eff'), ...],
+    promotes_inputs=[('aspect_ratio', 'AR_eff'), ('thickness_to_chord', 'section_tc'), ...],
     promotes_outputs=[('CL_alpha', 'wing_CL_alpha'), 'K_wf'],
 )
 

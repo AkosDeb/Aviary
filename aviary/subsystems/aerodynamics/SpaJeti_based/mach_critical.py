@@ -9,14 +9,16 @@ Weisshaar (Eq. 36), as ranked in Weisshaar (2024) -- best directly-solvable M_DD
 
 K_A = 0.887 (optimised technology factor, conventional subsonic airfoils, SEE = 3.95 %).
 
-CL used in the formula is computed internally from the 3-D lift curve slope and the
-maximum operating alpha (the same value used for the Nz constraint):
+CL used in the formula
+----------------------
+CL is derived from the minimum longitudinal load-factor requirement (Nz_min), not from
+CL_alpha * alpha_max.  Using CL_max would be overly conservative because at dash Mach
+the actual CL is close to the level-flight value, not the stall CL.
 
-    CL = CL_alpha_3D * alpha_max_rad
+    CL = Nz_min * m * g / (q * S)       [CL needed to achieve Nz_min]
 
-This couples the M_crit check and the Nz load-factor check to the same alpha input,
-so both constraints respond consistently when alpha_max is later computed from stall
-physics (StallAlphaComp, see TOOD.md).
+The M_CRIT_SAFETY_MARGIN on mach_upper_bound (DASH_MACH + buffer) already provides
+the safety buffer — no additional multiplier on CL is needed here.
 
 M_crit from Shevell wave-drag model (20*(M - M_crit)^4):
     dCD/dM = 0.1 at M_DD  =>  80*(M_DD - M_crit)^3 = 0.1
@@ -36,24 +38,23 @@ design stays below the onset of local sonic flow, not merely below drag divergen
 Sensitivity note
 ----------------
 M_DD is REDUCED by:
-  - increasing t/c   (thicker wing -> lower M_DD; traded against higher CL_alpha)
-  - increasing CL    (higher alpha or CL_alpha -> lower M_DD; couples to Nz constraint)
+  - increasing t/c   (thicker wing -> lower M_DD)
+  - increasing CL    (higher Nz_min or lower q/S -> lower M_DD)
   - reducing sweep   (unswept wing -> lower M_DD for the same t/c)
 """
 
 import numpy as np
 import openmdao.api as om
 
-# (0.1/80)^(1/3): delta between M_DD and M_crit from the Shevell CD_wave model
 _M_DD_TO_MCRIT_DELTA = (0.1 / 80.0) ** (1.0 / 3.0)   # ~0.1077
+_G = 9.80665  # standard gravity [m/s²]
 
 
 class MachCriticalComp(om.ExplicitComponent):
     """Drag-divergence and critical Mach via Weisshaar Eq. 36.
 
-    CL is derived from CL_alpha * alpha_max -- the same alpha used in the Nz
-    constraint -- so both limits share a single hardcoded (or future stall-computed)
-    alpha input.
+    CL is derived from the Nz load-factor requirement:
+        CL = nz_min * aircraft_mass * g / (dynamic_pressure * wing_area)
 
     Inputs  (all at Group scope -- connect via promotes at add_subsystem)
     -------
@@ -61,12 +62,14 @@ class MachCriticalComp(om.ExplicitComponent):
         Quarter-chord sweep angle phi_25.
     section_tc : float [-]
         Thickness-to-chord ratio t/c (from AirfoilConstantsComp inside the Group).
-    CL_alpha : float [/rad]
-        3-D wing lift curve slope (= surface_CL_alpha from Polhamus at Group scope).
-        Used to compute CL = CL_alpha * alpha_max_rad for the Weisshaar formula.
-    alpha_max_deg : float [deg]
-        Maximum operating angle of attack (shared with the Nz constraint).
-        Hardcoded until StallAlphaComp replaces it (see TOOD.md).
+    nz_min : float [-]
+        Minimum longitudinal load factor requirement (e.g. 7.0).
+    aircraft_mass : float [kg]
+        Aircraft mass at the design point.
+    dynamic_pressure : float [Pa]
+        Dynamic pressure q at the design point.
+    wing_area : float [m²]
+        Wing reference area S.
     mach_upper_bound : float [-]
         Maximum mission Mach + safety buffer (= DASH_MACH + M_CRIT_SAFETY_MARGIN).
         Constraint: M_crit >= mach_upper_bound  =>  mach_crit_margin >= 0.
@@ -104,19 +107,20 @@ class MachCriticalComp(om.ExplicitComponent):
             desc='Thickness-to-chord ratio t/c (from AirfoilConstantsComp)',
         )
         self.add_input(
-            'CL_alpha', val=5.0, units='unitless',
-            desc=(
-                '3-D wing lift curve slope [/rad] (surface_CL_alpha from Polhamus). '
-                'Used with alpha_max_deg to compute the CL for the Weisshaar formula.'
-            ),
+            'nz_min', val=7.0, units='unitless',
+            desc='Minimum longitudinal load factor requirement.',
         )
         self.add_input(
-            'alpha_max_deg', val=12.0, units='deg',
-            desc=(
-                'Maximum operating angle of attack [deg]. '
-                'Shared with LongitudinalLoadFactor (Nz constraint). '
-                'Replace with StallAlphaComp output for physics-based alpha_stall.'
-            ),
+            'aircraft_mass', val=15.0, units='kg',
+            desc='Aircraft mass at the design point [kg].',
+        )
+        self.add_input(
+            'dynamic_pressure', val=8581.0, units='Pa',
+            desc='Dynamic pressure q at the design point [Pa].',
+        )
+        self.add_input(
+            'wing_area', val=0.5, units='m**2',
+            desc='Wing reference area S [m²].',
         )
         self.add_input(
             'mach_upper_bound', val=0.57, units='unitless',
@@ -146,13 +150,15 @@ class MachCriticalComp(om.ExplicitComponent):
         self.declare_partials('*', '*', method='cs')
 
     def compute(self, inputs, outputs):
-        phi_rad     = inputs['surface_sweep_c4'] * (np.pi / 180.0)
-        tc          = inputs['section_tc']
-        cl_alpha    = inputs['CL_alpha']
-        alpha_rad   = inputs['alpha_max_deg'] * (np.pi / 180.0)
-        mach_ub     = inputs['mach_upper_bound']
+        phi_rad = inputs['surface_sweep_c4'] * (np.pi / 180.0)
+        tc      = inputs['section_tc']
+        nz_min  = inputs['nz_min']
+        mass    = inputs['aircraft_mass']
+        q       = inputs['dynamic_pressure']
+        S       = inputs['wing_area']
+        mach_ub = inputs['mach_upper_bound']
 
-        cl   = cl_alpha * alpha_rad
+        cl = nz_min * mass * _G / (q * S)
 
         cos1 = np.cos(phi_rad)
         cos2 = cos1 ** 2

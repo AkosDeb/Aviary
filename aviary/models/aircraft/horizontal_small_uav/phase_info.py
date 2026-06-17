@@ -87,7 +87,7 @@ phase_info = {
             'aerodynamics': {'method': 'external'},
         },
         'user_options': {
-            'num_segments': 2,
+            'num_segments': 4,
             'order': 3,
             'mach_optimize': True,
             'mach_bounds': ((0.18, DASH_MACH), 'unitless'),
@@ -118,7 +118,7 @@ phase_info = {
             'aerodynamics': {'method': 'external'},
         },
         'user_options': {
-            'num_segments': 2,
+            'num_segments': 4,
             'order': 3,
             'mach_optimize': False,
             'mach_initial': (DASH_MACH, 'unitless'),

@@ -1,5 +1,376 @@
 # SpaJeti v1.0.0 H-wing - Model Changelog
 
+## v1.28.0 - 2026-06-17
+
+**Geometry-derived VTP tip inertia for Step 5**
+
+- `VTPTipInertia` now computes the half-wing H-wing endplate mass from VTP
+  geometry and `aeroelasticity:vtp_areal_density` instead of relying on the
+  FLOPS vertical-tail mass, which is zeroed in the current H-wing setup.
+- The half-wing convention is explicit: each wingtip carries two mirrored VTP
+  panels, one up and one down. Their vertical static offsets cancel, while their
+  pitch inertias add.
+- Generated `aeroelasticity:vtp_tip_mass` and
+  `aeroelasticity:vtp_tip_pitch_inertia` are now promoted into
+  `SpanwiseMassDistribution`, so beam modes respond to VTP span and areal
+  density.
+- Added regression tests for VTP areal-density and span sensitivity, and added
+  the generated VTP inertial values to the SpaJeti result report.
+
+Versioning note:
+- This is a `MINOR` bump because it changes the Step-5 aeroelastic mass/inertia
+  physics feeding the spanwise beam and beam-modal flutter screens.
+
+---
+
+## v1.27.0 - 2026-06-17
+
+**Beam-modal P-K flutter diagnostics**
+
+- Extended `BeamModalFlutter` with a reduced-frequency Theodorsen P-K iteration
+  on the finite-element bending and torsion modes.
+- Added beam-modal P-K speed, frequency, margin, damping, modal frequency, and
+  convergence outputs.
+- Wired the new Step-4 modal P-K outputs into `AeroelasticityGroup`, the
+  SpaJeti result report, tests, and aeroelasticity documentation.
+- The beam-modal outputs remain reporting/calibration diagnostics; the existing
+  scalar design-point eigenvalue constraint stays active until modal calibration
+  is complete.
+
+Versioning note:
+- This is a `MINOR` bump because it adds new aeroelastic physics and report
+  outputs to the Step-4 beam-modal path.
+
+---
+
+## v1.26.1 - 2026-06-17
+
+**Aeroelasticity documentation refresh**
+
+- Replaced the stale aeroelasticity README with the current spanwise Step-3 and
+  beam-modal Step-4 architecture.
+- Added a model-folder component catalog documenting the Schrenk, spanwise
+  wingbox, spanwise mass, spanwise equivalent, scalar flutter, P-K, and
+  beam-modal components next to their implementations.
+
+Versioning note:
+- This is a `PATCH` bump because it documents the existing v1.26.0
+  implementation without changing model behavior.
+
+---
+
+## v1.26.0 - 2026-06-17
+
+**Beam-modal flutter screen**
+
+- Added `BeamModalFlutter`, the first Step-4 spanwise beam-modal aeroelastic
+  screen.
+- The component computes one finite-element bending mode and one finite-element
+  torsion mode from the Step-3 spanwise beam arrays, evaluates design-point
+  modal stability, and scans for a modal flutter speed.
+- The aerodynamic model is quasi-steady strip theory for now; it is the bridge
+  toward a later modal P-K/generalized-aerodynamic-force implementation.
+- Wired the new modal outputs into `AeroelasticityGroup` and the SpaJeti results
+  report. The existing scalar `lambda_max` constraint is retained until the
+  modal screen is calibrated.
+
+Versioning note:
+- This is a `MINOR` bump because it adds the first beam-modal flutter physics
+  path.
+
+---
+
+## v1.25.1 - 2026-06-17
+
+**Step-3 optimization validation and console-safe report text**
+
+- Ran the full v1.25.0 optimization with the spanwise-equivalent aeroelastic
+  constraints active.
+- IPOPT reached local infeasibility, but the final physical constraint table
+  satisfied the model-level checks: Ny, Nz, M_crit margin, divergence margin,
+  design-point flutter eigenvalue, SLS thrust, fuel budget, and engine mass.
+- Replaced a non-ASCII approximate symbol in the parasite-drag report so the
+  normal Windows console can complete post-processing without requiring
+  `PYTHONIOENCODING=utf-8`.
+
+Versioning note:
+- This is a `PATCH` bump because it records validation and fixes report text
+  only; the Step-3 physics implementation remains v1.25.0.
+
+---
+
+## v1.25.0 - 2026-06-17
+
+**Spanwise-equivalent aeroelastic active constraints**
+
+- Added `SpanwiseEquivalentProperties`, reducing spanwise `EI(y)`, `GJ(y)`,
+  total mass/span, and total pitch inertia/span into scalar properties for the
+  existing divergence, flutter, P-K, load, and strength checks.
+- Switched promoted scalar `EI`, `GJ`, torsional stiffness, plunge stiffness,
+  mass/span, and pitch inertia/span to the spanwise-equivalent reducer.
+- Kept `WingboxStructuralEstimate` for root geometry, elastic-axis, and control
+  bookkeeping only.
+- Connected live engine mass and mission fuel mass into the spanwise mass model.
+
+Versioning note:
+- This is a `MINOR` bump because active aeroelastic constraints now consume the
+  Step-3 spanwise beam reduction.
+
+---
+
+## v1.24.0 - 2026-06-17
+
+**Spanwise aeroelastic mass distribution**
+
+- Added `SpanwiseMassDistribution` to combine structural wingbox mass with
+  explicit VTP tip, engine, fuel, servo, and elevon mass terms.
+- The component reports total spanwise mass per span, total pitch inertia per
+  span, added mass per span, and total half-wing mass for the future beam modal
+  flutter model.
+- Added explicit aeroelastic mass input names so the spanwise model does not
+  depend on FLOPS mass outputs that may intentionally be zeroed for the H-wing
+  endplates.
+- Existing scalar divergence/flutter constraints remain unchanged.
+
+Versioning note:
+- This is a `MINOR` bump because it adds a new aeroelastic mass-property physics
+  component.
+
+---
+
+## v1.23.0 - 2026-06-17
+
+**Schrenk spanwise beam response**
+
+- Added `SpanwiseBeamResponse`, which integrates Schrenk bending moment and
+  torque against local `EI(y)` and `GJ(y)`.
+- Wired Schrenk distributed loads and the spanwise beam response into
+  `AeroelasticityGroup` as analysis/reporting outputs.
+- Existing scalar divergence/flutter constraints still use the equivalent
+  wingbox path until the spanwise beam is fully reviewed.
+- Added tests for closed-form constant moment/torque response and clamped-root
+  boundary conditions.
+
+Versioning note:
+- This is a `MINOR` bump because it adds a new aeroelastic physics component
+  and live group wiring.
+
+---
+
+## v1.22.0 - 2026-06-17
+
+**Spanwise wingbox properties**
+
+- Added `SpanwiseWingboxProperties`, the first Step-3 aeroelastic beam-model
+  component.
+- The component computes spanwise stations, local chord, wingbox width/height,
+  `EI(y)`, `GJ(y)`, mass per span, and pitch inertia per span.
+- Wired the component into `AeroelasticityGroup` as analysis-only with unique
+  output names, leaving the current scalar divergence/flutter constraints
+  unchanged.
+- Added tests for tapered-wing station trends and structural `t/c` stiffness
+  response.
+
+Versioning note:
+- This is a `MINOR` bump because it adds new aeroelastic structural physics.
+
+---
+
+## v1.21.1 - 2026-06-17
+
+**Aeroelastic t/c validation**
+
+- Ran a full-model sensitivity check at `wing_section_tc = 0.05, 0.15, 0.18`.
+- Confirmed structural `t/c` follows `wing_section_tc`, and `EI`, `GJ`, and
+  divergence speed increase monotonically with thickness.
+- Added a regression test for monotonic wingbox stiffness response to structural
+  `t/c`.
+- Marked the Step 2 validation complete in `TOOD.md`.
+
+Versioning note:
+- This is a `PATCH` bump because it validates and tests the v1.21.0 wiring.
+
+---
+
+## v1.21.0 - 2026-06-17
+
+**Aeroelastic structural t/c coupling**
+
+- Added `aeroelasticity:structural_thickness_to_chord` as the explicit wingbox
+  thickness input for aeroelasticity.
+- Connected live `wing_section_tc` to the aeroelastic structural wingbox so M_crit
+  and structural stiffness now respond to the same airfoil thickness design
+  variable.
+- Updated `TOOD.md` to mark the Schrenk backend as done and the structural t/c
+  coupling as implemented pending validation.
+
+Versioning note:
+- This is a `MINOR` bump because it changes aeroelastic structural physics wiring.
+
+---
+
+## v1.20.0 - 2026-06-17
+
+**Schrenk aeroelastic load backend**
+
+- Added `SchrenkLiftDistribution`, a spanwise half-wing load-distribution
+  component for the custom pre-NASTRAN aeroelasticity path.
+- The component outputs span stations, local chord, lift per span, shear,
+  bending moment, torque, and compatible root/tip summary values.
+- Added the aeroelasticity improvement roadmap to `TOOD.md`.
+
+Versioning note:
+- This is a `MINOR` bump because it adds a new aeroelastic analysis component,
+  although it is not yet wired into the optimizer.
+
+---
+
+## v1.19.0 - 2026-06-15
+
+**Optimization feasibility recovery**
+
+- Added `aircraft:wing:area` as an optimization design variable with bounds
+  `0.40 <= S_ref <= 0.75 m^2`.
+- Restored the climb phase transcription to `num_segments = 4`, `order = 3`
+  to get back to a more stable continuation point before re-refining the mesh.
+- Kept the v1.18.5 SpaJeti 3D report camera/fallback fix.
+
+Versioning note:
+- This is a `MINOR` bump because it changes the optimization design space by
+  adding wing area as a new design variable.
+
+---
+
+## v1.18.5 - 2026-06-15
+
+**SpaJeti 3D camera robustness**
+
+- Replaced the dashboard report's dependency on `aframe-orbit-controls` for the
+  initial camera placement with a fixed camera view.
+- Added a compact plan-view fallback overlay so the H-wing layout remains
+  visible even if WebGL controls fail inside the dashboard iframe.
+
+Versioning note:
+- This is a `PATCH` bump because it only improves report rendering robustness.
+
+---
+
+## v1.18.4 - 2026-06-15
+
+**SpaJeti 3D dashboard fallback link**
+
+- Added a standard `reports/subsystems/spajeti_3d.md` report entry that links
+  to the standalone SpaJeti 3D HTML file.
+- Kept the custom dashboard Results tab, but made the geometry easier to find
+  if the dashboard command is launched through an older or different Aviary
+  entry point.
+
+Versioning note:
+- This is a `PATCH` bump because it only improves report discoverability.
+
+---
+
+## v1.18.3 - 2026-06-15
+
+**Flat wing geometry**
+
+- Set `aircraft:wing:dihedral` to `0.0 deg` in the horizontal small UAV input
+  deck.
+- Changed the SpaJeti 3D geometry fallback dihedral to `0.0 deg`.
+- Updated the README geometry note to describe the flat-wing convention.
+
+Versioning note:
+- This is a `PATCH` bump because it changes a single geometry input and its
+  visualization fallback.
+
+---
+
+## v1.18.2 - 2026-06-15
+
+**SpaJeti 3D engine visual cleanup**
+
+- Moved the dark turbojet visual from an intersecting aft-fuselage cylinder to
+  a small aft nozzle disk.
+- Added an overlay note identifying the dark aft disk as the turbojet nozzle.
+
+Versioning note:
+- This is a `PATCH` bump because it only clarifies the dashboard geometry
+  visualization.
+
+---
+
+## v1.18.1 - 2026-06-15
+
+**SpaJeti 3D geometry shape correction**
+
+- Changed the dashboard SpaJeti fuselage visual from a simple cylinder to a
+  faceted superellipse mesh using the same nose/tail/base fractions and
+  rounded-square exponent as `SuperellipseFuselageGeometry`.
+- Changed each wingtip VTP visual into two mirrored panels: one grows upward
+  and one grows downward from the wingtip centerline, matching the split
+  endplate interpretation used by the effective aspect-ratio correction.
+
+Versioning note:
+- This is a `PATCH` bump because it corrects visualization geometry only.
+
+---
+
+## v1.18.0 - 2026-06-15
+
+**SpaJeti 3D dashboard geometry**
+
+- Added a SpaJeti-specific 3D HTML report written to
+  `reports/spajeti_aircraft_3d.html` after each run.
+- The report uses live optimized geometry values for fuselage length/width,
+  wing span/area/taper/sweep/dihedral, twin wingtip VTP endplates, and engine
+  diameter.
+- Updated the Aviary dashboard to add a `SpaJeti 3D Geometry` Results tab when
+  that report file exists.
+
+Versioning note:
+- This is a `MINOR` bump because it adds a new user-facing dashboard report.
+
+---
+
+## v1.17.1 - 2026-06-15
+
+**Longitudinal load-factor report fix**
+
+- Fixed the printed Nz reproduction to use `ALPHA_MAX_DEG` instead of a
+  hardcoded `12.0 deg`.
+- This makes the reproduced `CL`, lift, and `Nz` agree with the OpenMDAO
+  `LongitudinalLoadFactor` outputs when `ALPHA_MAX_DEG = 15.0`.
+
+Versioning note:
+- This is a `PATCH` bump because it fixes report post-processing only.
+
+---
+
+## v1.17.0 - 2026-06-15
+
+**Full SpaJeti/Roskam mission drag integration**
+
+- Replaced the mission-phase FLOPS lift-balance and induced-drag components
+  inside `SpaJeti_based/roskam_aero_group.py` with local SpaJeti components.
+- Mission drag now includes:
+
+  `CD = CD0 + CDI_wing + CDI_fus`
+
+  before conversion to force with `D = CD*q*S_ref`.
+- Added mission-node fuselage lift-induced drag using Roskam Eq. 4.33 with
+  `alpha = CL / CL_alpha_w`, so the fuselage lift-drag term varies along the
+  trajectory instead of remaining report-only.
+- Added the required mission static parameters for `wing_CL_alpha`,
+  `fuselage_base_area`, `fuselage_planform_area`, and
+  `fuselage_fineness_ratio`.
+- Confirmed the wing section `t/c` lower optimization bound is `0.05`.
+
+Versioning note:
+- This is a `MINOR` bump because the mission drag physics and aero ownership
+  wiring changed.
+
+---
+
 ## v1.16.0 - 2026-06-15
 
 **SpaJeti aero package split**

@@ -39,17 +39,22 @@ README.md                       This file
 From the repository root:
 
 ```powershell
-& C:/Software/Anaconda/envs/aviary/python.exe `
-  aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py
+cd C:\Software\Repository\Aviary_clean
+python aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py
 ```
 
-Outputs → `outputs/run_horizontal_small_uav_out/`
+Outputs → `outputs/run_horizontal_small_uav_try_v1_v1.19.0_out/`
 
-### Open dashboard
+### Open dashboard (after opt completes)
 
 ```powershell
-$env:PYTHONPATH = (Get-Location).Path
-& C:/Software/Anaconda/envs/aviary/Scripts/aviary.exe dashboard outputs/run_horizontal_small_uav_out
+aviary dashboard run_horizontal_small_uav_try_v1_v1.19.0
+```
+
+### One-liner: run opt then launch dashboard
+
+```powershell
+python aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py; aviary dashboard run_horizontal_small_uav_try_v1_v1.19.0
 ```
 
 ---
@@ -66,7 +71,7 @@ PRINT_AERO_DETAIL = True   # set False to suppress the wing/VTP/rudder aero brea
 
 | Value | Effect |
 |-------|--------|
-| `True` | Prints a 9-section breakdown: wing geometry, endplate AR correction (Scholz steps), Polhamus CL_alpha, K_wf, CY_beta/CY_delta_r, Ny/Nz reproduced from formula, engine sizing, fuel budget |
+| `True` | Prints a 9-section breakdown: wing geometry, endplate AR correction (Scholz steps), Polhamus CL_alpha, M_crit evaluation, CY_beta/CY_delta_r, Ny/Nz reproduced from formula, engine sizing, fuel budget |
 | `False` | Only the solver exit message and Aviary summary table are printed |
 
 To toggle from the command line without editing the file:
@@ -90,13 +95,13 @@ before running.
 |---|---|---|
 | `SmallTurbojetModel` | `aviary/subsystems/propulsion/small_turbojet` | Regression-based turbojet sizing and SFC |
 | `HTailGeometry` | `aviary/subsystems/geometry/flops_based/htail_geometry.py` | VTP span → area, AR, root chord |
-| `ScholzWingletARCorrection` | `aviary/subsystems/aerodynamics/flops_based/lift_curve_slope.py` | Scholz (INCAS 2018) winglet AR correction → AR_eff, k_h |
-| `LiftCurveSlopePolhamus` | `aviary/subsystems/aerodynamics/flops_based/lift_curve_slope.py` | Polhamus CL_alpha (wing and VTP) |
-| `CyBetaVtp` / `CyDeltaRudder` | `aviary/subsystems/aerodynamics/flops_based/cy_beta_vtp.py` | Side-force derivatives for Ny constraint |
-| `LateralLoadFactor` | `aviary/subsystems/aerodynamics/flops_based/lateral_load_factor.py` | Ny = CY_beta*beta + CY_delta_r*delta_r (q*S) / W |
-| `LongitudinalLoadFactor` | `aviary/subsystems/aerodynamics/flops_based/lateral_load_factor.py` | Nz = CL_alpha*alpha_max (q*S) / W |
-| `MACGeometryComp` | `aviary/subsystems/aerodynamics/flops_based/surface_geometry.py` | MAC chord, spanwise station, and body-frame position (x, z) |
-| `MachCriticalComp` | `aviary/subsystems/aerodynamics/flops_based/mach_critical.py` | Weisshaar M_DD / M_crit; constrained M_crit >= DASH_MACH + 0.05 |
+| `ScholzWingletARCorrection` | `aviary/subsystems/aerodynamics/SpaJeti_based/lift_curve_slope.py` | Scholz (INCAS 2018) winglet AR correction → AR_eff, k_h |
+| `LiftCurveSlopePolhamus` | `aviary/subsystems/aerodynamics/SpaJeti_based/lift_curve_slope.py` | Wing-alone Polhamus CL_alpha; c_l_alpha computed from t/c via Abbott & von Doenhoff |
+| `CyBetaVtp` / `CyDeltaRudder` | `aviary/subsystems/aerodynamics/SpaJeti_based/cy_beta_vtp.py` | Side-force derivatives for Ny constraint |
+| `LateralLoadFactor` | `aviary/subsystems/aerodynamics/SpaJeti_based/lateral_load_factor.py` | Ny = CY_beta*beta + CY_delta_r*delta_r (q*S) / W |
+| `LongitudinalLoadFactor` | `aviary/subsystems/aerodynamics/SpaJeti_based/lateral_load_factor.py` | Nz = CL_alpha*alpha_max (q*S) / W |
+| `MACGeometryComp` | `aviary/subsystems/aerodynamics/SpaJeti_based/surface_geometry.py` | MAC chord, spanwise station, and body-frame position (x, z) |
+| `MachCriticalComp` | `aviary/subsystems/aerodynamics/SpaJeti_based/mach_critical.py` | Weisshaar M_DD / M_crit; CL derived from Nz_min requirement; constrained M_crit >= DASH_MACH + M_CRIT_SAFETY_MARGIN |
 | `CGEstimatorGroup` / `CGComputeComp` | `aviary/subsystems/geometry/flops_based/cg_estimator.py` | Weighted-average aircraft CG from component mass list; bypass mode available |
 | `FuelBudgetEstimate` | `run_horizontal_small_uav.py` (inline) | Available fuel = gross − empty − payload − engine |
 
@@ -167,7 +172,7 @@ x_mac_c4 = x_mac_le + c_mac / 4                  MAC quarter-chord (aero centre 
 ### SpaJeti Numerical Example
 
 Input baseline: b = 1.8 m, S = 0.45 m², lambda = 0.6, sweep_c4 = 0 deg,
-dihedral = 3 deg, x_apex = 0.80 m, z_apex = 0.00 m.
+dihedral = 0 deg, x_apex = 0.80 m, z_apex = 0.00 m.
 
 ```
 c_r      = 2 * 0.45 / (1.8 * 1.6)         = 0.313 m
@@ -278,6 +283,7 @@ neutral-point calculation will be added in `StaticMarginComp` (see TOOD.md).
 |---|---|---|---|
 | Lateral load factor Ny | ≥ 7.0 | 550 km/h, 5 km ISA | see [README_lateral_stability.md] |
 | Longitudinal load factor Nz | ≥ 7.0 | 550 km/h, 5 km ISA | see [README_lateral_stability.md] |
+| M_crit margin | ≥ 0 | DASH_MACH + 0.05 = 0.57 | CL based on Nz_min; tighten via `M_CRIT_SAFETY_MARGIN` |
 | T/W at SLS | ≥ 1.5 | SLS, sea level | `scaled_sls_thrust ≥ 1.5 * m_gross * g` |
 | Engine mass | ≤ 5.0 kg | — | regression upper bound |
 | Fuel budget margin | ≥ 0 kg | — | see formula below |
@@ -308,76 +314,63 @@ Minimise `−range` (Aviary fallout: fixed design, computed range).
 
 ---
 
-## Baseline Result — 2026-06-08
+## Aero Physics Changes (2026-06-15)
 
-> **Note:** This baseline was run with k_WL = 2.0 (theoretical optimum).
-> Current code uses k_WL = 2.45 (experimental average). AR_eff and range
-> will differ on re-run; update this section after the next run.
+Three corrections applied since the 2026-06-08 baseline:
 
-Run converged to acceptable level (IPOPT, 37 iterations, 39 s).
+### 1. Wing CL_alpha — fuselage K_wf removed
 
-### Geometry
+`LiftCurveSlopePolhamus` now outputs the **wing-alone** CL_alpha.
+`K_wf = 1 + 0.025(d_f/b) − 0.25(d_f/b)²` is a wing-body correction that belongs
+in the total lift buildup, not in the wing's own CL_alpha. It has been removed from
+the component entirely.
 
-| Output | Value |
-|---|---|
-| Wing span | 1.357 m |
-| Wing area | 0.450 m² (fixed) |
-| Wing AR (geometric) | 4.09 |
-| Wing AR_eff (endplate) | 7.04 |
-| Endplate factor k_h | 1.720 |
-| Fuselage factor K_wf | 0.999 |
-| VTP span (per endplate) | 0.507 m |
-| VTP area | 0.080 m² |
-| VTP AR | 1.20 |
-| H-tail area | 0.150 m² |
-| Fuselage length | 2.000 m |
+### 2. Section lift slope — Abbott & von Doenhoff t/c correction
 
-### Load Factors (550 km/h, 5 km ISA, q = 8 581 Pa)
+The component no longer takes `section_lift_slope` as an external input.
+It now accepts `thickness_to_chord` (t/c) and computes c_l_alpha internally:
 
-| Output | Value | Limit |
+```
+c_l_alpha = 2π (1 + 0.77 · t/c)   [Abbott & von Doenhoff]
+```
+
+At t/c = 0.12 this gives 6.86 /rad vs. the thin-airfoil 6.28 /rad (+9 %).
+The t/c is wired from `section_tc` (AirfoilConstantsComp) so it tracks the
+design variable automatically.
+
+### 3. M_crit — CL based on Nz requirement, not alpha_max
+
+Previously `MachCriticalComp` used `CL_alpha × alpha_max` ≈ 1.42 in the
+Weisshaar formula — the stall CL, not the dash CL (~0.03).
+This was 5× too conservative and forced the optimizer to paper-thin wings.
+
+CL is now derived from the Nz_min load-factor requirement:
+
+```
+CL = Nz_min × m × g / (q × S)   ≈ 0.24  at the design point
+```
+
+The `M_CRIT_SAFETY_MARGIN = 0.05` (mach_upper_bound = DASH_MACH + 0.05)
+provides all required safety — no additional multiplier on CL.
+
+At t/c = 0.12, sweep = 0: M_crit ≈ 0.63 (was ~0.53), constraint satisfied with 0.06 margin.
+
+| | Before | After |
 |---|---|---|
-| Wing CL_alpha (endplate + K_wf) | 5.196 /rad | — |
-| VTP CL_alpha_v | 2.649 /rad | — |
-| CY_beta_vtp | −1.095 /rad | — |
-| CY_delta_r | −0.517 /rad | — |
-| Ny (lateral) | 14.77 | ≥ 7.0 ✓ |
-| Nz (vertical) | 28.57 | ≥ 7.0 ✓ |
-| SLS Thrust | 272.5 N | — |
-| T/W at SLS | 1.853 | ≥ 1.5 ✓ |
+| CL into Weisshaar | 1.42 (CL_alpha × α_max) | 0.24 (Nz_min × mg/qS) |
+| M_crit at t/c = 0.12 | ~0.53 — violated | ~0.63 — OK |
+| Optimizer t/c result | 0.058 (forced thin) | TBD after re-run |
 
-### Propulsion
+---
 
-| Output | Value |
-|---|---|
-| Engine diameter | 0.126 m |
-| Engine max RPM | 110 173 rpm |
-| Engine mass | 2.971 kg |
-| SFC | 4.373 × 10⁻⁵ kg/(N·s) |
+## Baseline Result — stale, pending re-run
 
-### Mission Performance
+> **Stale since 2026-06-15 aero physics corrections.** Re-run to update.
 
-| Output | Value |
-|---|---|
-| Range | **74.1 km** |
-| Total fuel used | 4.493 kg |
-| Fuel capacity | 8.000 kg |
-| Mass-budget fuel limit | 4.529 kg |
-| Fuel budget margin | 0.035 kg (nearly active) |
-| Payload | 0.500 kg |
-
-### Mass Breakdown
-
-| Item | Mass |
-|---|---|
-| Gross mass | 15.000 kg |
-| Empty mass (structural) | 7.000 kg |
-| Engine | 2.971 kg |
-| Payload | 0.500 kg |
-| Fuel used | 4.493 kg |
-
-The fuel budget constraint is the binding constraint — the optimizer exhausted
-nearly all available fuel to achieve 74 km. The climb Mach lower bound (0.30)
-was also active.
+Pre-fix run (original code, K_wf in CL_alpha, CL_max in M_crit):
+IPOPT EXIT — converged to point of local infeasibility. Range = 159 km.
+Root cause: M_crit constraint driven by CL_max ≈ 1.42 forced t/c → 0.058,
+making the constraint effectively infeasible at any reasonable wing geometry.
 
 ---
 

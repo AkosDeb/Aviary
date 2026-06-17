@@ -148,7 +148,7 @@ aircraft:wing:center_distance,0.45,unitless
 aircraft:wing:composite_fraction,0.0,unitless
 aircraft:wing:control_surface_area_ratio,0.25,unitless
 aircraft:wing:detailed_wing,False,unitless
-aircraft:wing:dihedral,3.0,deg
+aircraft:wing:dihedral,0.0,deg
 aircraft:wing:glove_and_bat,0,m**2
 aircraft:wing:height,0.2,m
 aircraft:wing:laminar_flow_lower,0,unitless

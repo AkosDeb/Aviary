@@ -60,9 +60,9 @@ _R_WF_TABLE = np.array([
 ])
 
 # Leading-edge suction parameter R, digitized approximately from Roskam Part VI,
-# Figure 4.7 supplied in the project notes. Only the high-x inset is currently
-# allowed by the helper; the main-chart values below x=1.3e5 are rough
-# placeholders and intentionally raise until properly checked. The main chart uses
+# Figure 4.7 supplied in the project notes. Both the main chart and high-x inset
+# are first-pass placeholders and intentionally warn until properly checked. The
+# main chart uses
 # x = Re_LER * cot(Lambda_LE) * sqrt(1 - M^2*cos(Lambda_LE)^2), with families
 # keyed by A*lambda/cos(Lambda_LE). Figure 4.7 is marked M < 0.8 only.
 _LE_SUCTION_PARAM_AXIS = np.array([0.0, 1.0, 2.0, 4.0, 10.0])
@@ -544,16 +544,14 @@ def leading_edge_suction_parameter_roskam(
 
     Notes
     -----
-    First-pass linearized digitization from the supplied Figure 4.7 image.
-    Only the high-x inset branch is currently enabled:
+    First-pass linearized digitization from the supplied Figure 4.7 image:
 
         x = Re_LER * cot(Lambda_LE) * sqrt(1 - M^2*cos(Lambda_LE)^2)
         p = A * lambda / cos(Lambda_LE)
 
-    For ``x >= 1.3e5``, the inset curve ``R(p)`` is used and a warning is
-    issued because the digitization has not been independently checked against
-    a clean source. For ``x < 1.3e5``, this helper raises ``NotImplementedError``
-    instead of returning the rough placeholder main-chart table.
+    For ``x >= 1.3e5``, the inset curve ``R(p)`` is used. For lower x values,
+    the rough main-chart table is used down to the lower chart bound. Values
+    below the chart lower bound raise ``NotImplementedError``.
     """
     re_ler, mach_arr, sweep, ar, taper = np.broadcast_arrays(
         np.asarray(leading_edge_reynolds_number, dtype=float),
@@ -609,11 +607,12 @@ def leading_edge_suction_parameter_roskam(
     # Unswept or very-low-sweep wings drive cot(Lambda_LE) -> infinity; Figure
     # 4.7 then falls onto the high-x inset curve.
     use_inset = (~np.isfinite(x_param)) | (x_param >= _LE_SUCTION_HIGH_X_LIMIT)
-    if np.any(~use_inset):
-        bad_x = x_param[~use_inset]
+    use_main = ~use_inset
+    if np.any(use_main & (x_param < _LE_SUCTION_X_AXIS[0])):
+        bad_x = x_param[use_main & (x_param < _LE_SUCTION_X_AXIS[0])]
         raise NotImplementedError(
             "leading_edge_suction_parameter_roskam: Figure 4.7 main-chart "
-            f"interpolation is not implemented for x < {_LE_SUCTION_HIGH_X_LIMIT:.3g}. "
+            f"interpolation is not implemented for x < {_LE_SUCTION_X_AXIS[0]:.3g}. "
             f"Got x value(s) {bad_x}. The rough table currently in aero_utils.py is "
             "only a placeholder from the supplied image and has not been properly "
             "checked against a clean digitization."
@@ -621,7 +620,7 @@ def leading_edge_suction_parameter_roskam(
 
     warnings.warn(
         "leading_edge_suction_parameter_roskam: using first-pass digitized Roskam "
-        "Figure 4.7 high-x inset. This table is a placeholder from the supplied "
+        "Figure 4.7 data. This table is a placeholder from the supplied "
         "image and has not been independently checked as a perfect digitization "
         "of the original chart.",
         RuntimeWarning,
@@ -632,7 +631,14 @@ def leading_edge_suction_parameter_roskam(
         _LE_SUCTION_INSET_PARAM_AXIS,
         _LE_SUCTION_INSET_R,
     )
-    return inset_r
+    main_r = _interp_table_2d(
+        family_param,
+        x_param,
+        _LE_SUCTION_PARAM_AXIS,
+        _LE_SUCTION_X_AXIS,
+        _LE_SUCTION_TABLE,
+    )
+    return np.where(use_inset, inset_r, main_r)
 
 
 def oswald_efficiency_roskam(cl_alpha_w, ar_eff, leading_edge_suction_parameter=0.98):

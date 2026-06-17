@@ -1251,6 +1251,16 @@ def dashboard(script_name, port=0, run_in_background=False):
                     f'Unable to create aircraft 3D model display due to error: {e}',
                 )
 
+    spajeti_aircraft_3d_file = reports_dir / 'spajeti_aircraft_3d.html'
+    if os.path.isfile(spajeti_aircraft_3d_file):
+        create_report_frame(
+            'SpaJeti 3D Geometry',
+            results_tabs_list,
+            'SpaJeti-specific 3D geometry generated from the optimized H-wing UAV model.',
+            'html',
+            spajeti_aircraft_3d_file,
+        )
+
     # Make the Aviary variables table pane
     if os.path.isfile(problem_recorder_path):
         try:

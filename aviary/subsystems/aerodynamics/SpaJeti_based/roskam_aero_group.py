@@ -12,14 +12,118 @@ import numpy as np
 import openmdao.api as om
 
 from aviary.subsystems.aerodynamics.aero_common import DynamicPressure
-from aviary.subsystems.aerodynamics.flops_based.induced_drag import InducedDrag
-from aviary.subsystems.aerodynamics.flops_based.lift import LiftEqualsWeight
 from aviary.subsystems.aerodynamics.SpaJeti_based.parasite_drag import RoskamParasiteDragBuildUp
 from aviary.variable_info.variables import Aircraft, Dynamic
 
 
 _COMPONENT_NAMES = ('wing', 'vtp', 'fuselage')
 _COMPONENT_KINDS = ('lifting_surface', 'vtp', 'fuselage')
+_GRAV_METRIC = 9.80665
+_ETA_FIN_CYL_LD = np.array([2.0, 6.0, 12.0, 18.0, 28.0])
+_ETA_FIN_CYL_ETA = np.array([0.52, 0.64, 0.71, 0.75, 0.79])
+_CDC_MC = np.array([0.00, 0.25, 0.40, 0.50, 0.70])
+_CDC_CDC = np.array([1.20, 1.20, 1.27, 1.37, 1.68])
+
+
+class _LiftEqualsWeightLocal(om.ExplicitComponent):
+    """Local mission lift balance and CL calculation."""
+
+    def initialize(self):
+        self.options.declare('num_nodes', default=1, types=int)
+
+    def setup(self):
+        nn = self.options['num_nodes']
+        self.add_input(Dynamic.Vehicle.MASS, val=np.ones(nn), units='kg')
+        self.add_input(Dynamic.Atmosphere.DYNAMIC_PRESSURE, val=np.ones(nn), units='Pa')
+        self.add_input(Aircraft.Wing.AREA, val=1.0, units='m**2')
+        self.add_output(Dynamic.Vehicle.LIFT, val=np.ones(nn), units='N')
+        self.add_output('cl', val=np.ones(nn), units='unitless')
+        self.declare_partials('*', '*', method='fd')
+
+    def compute(self, inputs, outputs):
+        mass = inputs[Dynamic.Vehicle.MASS]
+        q = inputs[Dynamic.Atmosphere.DYNAMIC_PRESSURE]
+        s_ref = float(inputs[Aircraft.Wing.AREA].ravel()[0])
+        if s_ref <= 0.0:
+            raise ValueError(f'_LiftEqualsWeightLocal: wing reference area must be > 0; got {s_ref}.')
+        if np.any(q <= 0.0):
+            raise ValueError(f'_LiftEqualsWeightLocal: dynamic pressure must be > 0; got {q}.')
+
+        lift = mass * _GRAV_METRIC
+        outputs[Dynamic.Vehicle.LIFT] = lift
+        outputs['cl'] = lift / (q * s_ref)
+
+
+class _RoskamMissionInducedDrag(om.ExplicitComponent):
+    """Mission-node wing induced drag using the SpaJeti/Roskam span-efficiency path."""
+
+    def initialize(self):
+        self.options.declare('num_nodes', default=1, types=int)
+
+    def setup(self):
+        nn = self.options['num_nodes']
+        self.add_input('cl', val=np.ones(nn) * 0.5, units='unitless')
+        self.add_input(Aircraft.Wing.ASPECT_RATIO, val=8.0, units='unitless')
+        self.add_input(Aircraft.Wing.SPAN_EFFICIENCY_FACTOR, val=0.9, units='unitless')
+        self.add_output('CDI', val=np.ones(nn) * 0.04, units='unitless')
+        self.declare_partials('*', '*', method='fd')
+
+    def compute(self, inputs, outputs):
+        cl = inputs['cl']
+        ar_geo = float(inputs[Aircraft.Wing.ASPECT_RATIO].ravel()[0])
+        e_span = float(inputs[Aircraft.Wing.SPAN_EFFICIENCY_FACTOR].ravel()[0])
+        if ar_geo <= 0.0:
+            raise ValueError(f'_RoskamMissionInducedDrag: aspect ratio must be > 0; got {ar_geo}.')
+        if e_span <= 0.0:
+            raise ValueError(
+                f'_RoskamMissionInducedDrag: span efficiency factor must be > 0; got {e_span}.'
+            )
+        outputs['CDI'] = cl**2 / (np.pi * ar_geo * e_span)
+
+
+class _FuselageMissionLiftDrag(om.ExplicitComponent):
+    """Mission-node Roskam fuselage drag due to lift, Eq. 4.33."""
+
+    def initialize(self):
+        self.options.declare('num_nodes', default=1, types=int)
+
+    def setup(self):
+        nn = self.options['num_nodes']
+        self.add_input('cl', val=np.ones(nn) * 0.5, units='unitless')
+        self.add_input('wing_CL_alpha', val=5.0, units='unitless')
+        self.add_input(Dynamic.Atmosphere.MACH, val=np.ones(nn) * 0.3, units='unitless')
+        self.add_input('fuselage_base_area', val=0.001, units='m**2')
+        self.add_input('fuselage_planform_area', val=0.25, units='m**2')
+        self.add_input(Aircraft.Wing.AREA, val=1.0, units='m**2')
+        self.add_input('fuselage_fineness_ratio', val=8.0, units='unitless')
+        self.add_output('CDI_fus', val=np.zeros(nn), units='unitless')
+        self.add_output('mission_alpha', val=np.zeros(nn), units='rad')
+        self.declare_partials('*', '*', method='fd')
+
+    def compute(self, inputs, outputs):
+        cl = inputs['cl']
+        cl_alpha = float(inputs['wing_CL_alpha'].ravel()[0])
+        mach = inputs[Dynamic.Atmosphere.MACH]
+        s_b = float(inputs['fuselage_base_area'].ravel()[0])
+        s_plf = float(inputs['fuselage_planform_area'].ravel()[0])
+        s_ref = float(inputs[Aircraft.Wing.AREA].ravel()[0])
+        fin_ratio = float(inputs['fuselage_fineness_ratio'].ravel()[0])
+
+        if cl_alpha <= 0.0:
+            raise ValueError(f'_FuselageMissionLiftDrag: wing_CL_alpha must be > 0; got {cl_alpha}.')
+        if s_b < 0.0 or s_plf < 0.0:
+            raise ValueError('_FuselageMissionLiftDrag: fuselage areas must be non-negative.')
+        if s_ref <= 0.0:
+            raise ValueError(f'_FuselageMissionLiftDrag: reference area must be > 0; got {s_ref}.')
+
+        alpha_rad = cl / cl_alpha
+        eta = np.interp(fin_ratio, _ETA_FIN_CYL_LD, _ETA_FIN_CYL_ETA)
+        c_d_c = np.interp(mach * np.sin(alpha_rad), _CDC_MC, _CDC_CDC)
+        base_area_term = 2.0 * alpha_rad**2 * s_b / s_ref
+        planform_term = eta * c_d_c * alpha_rad**3 * s_plf / s_ref
+
+        outputs['mission_alpha'] = alpha_rad
+        outputs['CDI_fus'] = base_area_term + planform_term
 
 
 class _GeomArrayAssembler(om.ExplicitComponent):
@@ -41,14 +145,23 @@ class _GeomArrayAssembler(om.ExplicitComponent):
         self.add_input(Aircraft.Wing.SWEEP, val=0.0, units='deg')
 
         # ── VTP ───────────────────────────────────────────────────────────────
-        self.add_input(Aircraft.VerticalTail.WETTED_AREA, val=0.1, units='m**2')
-        self.add_input(Aircraft.VerticalTail.AREA, val=0.05, units='m**2')
+        # Use custom 'vtp_wetted_area' and 'vtp_area' (from HTailGeometry via
+        # trajectory parameter) instead of the FLOPS static IndepVarComp values
+        # aircraft:vertical_tail:wetted_area / area, which do not respond to the
+        # VTP span design variable.
+        self.add_input('vtp_wetted_area', val=0.32, units='m**2')
+        self.add_input('vtp_area', val=0.05, units='m**2')
         self.add_input(Aircraft.VerticalTail.SPAN, val=0.31, units='m')
         self.add_input(Aircraft.VerticalTail.THICKNESS_TO_CHORD, val=0.12, units='unitless')
         self.add_input(Aircraft.VerticalTail.SWEEP, val=0.0, units='deg')
 
         # ── Fuselage ─────────────────────────────────────────────────────────
-        self.add_input(Aircraft.Fuselage.WETTED_AREA, val=2.0, units='m**2')
+        # fuselage_exposed_wetted_area replaces the FLOPS/CSV static
+        # aircraft:fuselage:wetted_area (which was hardcoded at 2.0 m² in the CSV
+        # and never responded to wing DVs).  The exposed area is computed by
+        # FuselageExposedWettedAreaComp: superellipse gross Swet minus
+        # 2 × wing airfoil cross-section holes.
+        self.add_input('fuselage_exposed_wetted_area', val=0.585, units='m**2')
         self.add_input(Aircraft.Fuselage.LENGTH, val=2.0, units='m')
         self.add_input(Aircraft.Fuselage.MAX_WIDTH, val=0.15, units='m')
 
@@ -66,13 +179,13 @@ class _GeomArrayAssembler(om.ExplicitComponent):
             return float(x.flat[0])
 
         wing_chord = _f(inputs[Aircraft.Wing.AREA]) / max(_f(inputs[Aircraft.Wing.SPAN]), 1e-6)
-        vtp_chord = _f(inputs[Aircraft.VerticalTail.AREA]) / max(_f(inputs[Aircraft.VerticalTail.SPAN]), 1e-6)
+        vtp_chord = _f(inputs['vtp_area']) / max(_f(inputs[Aircraft.VerticalTail.SPAN]), 1e-6)
         fus_f = _f(inputs[Aircraft.Fuselage.LENGTH]) / max(_f(inputs[Aircraft.Fuselage.MAX_WIDTH]), 1e-6)
 
         outputs['wetted_area_arr'] = np.array([
             _f(inputs[Aircraft.Wing.WETTED_AREA]),
-            _f(inputs[Aircraft.VerticalTail.WETTED_AREA]),
-            _f(inputs[Aircraft.Fuselage.WETTED_AREA]),
+            _f(inputs['vtp_wetted_area']),
+            _f(inputs['fuselage_exposed_wetted_area']),
         ])
         outputs['char_length_arr'] = np.array([
             wing_chord,
@@ -101,13 +214,13 @@ class RoskamMissionAeroGroup(om.Group):
 
     Replaces FLOPS ``ComputedAeroGroup`` entirely.  Uses:
 
-    - ``LiftEqualsWeight``       — CL and lift force (same as FLOPS)
+    - ``_LiftEqualsWeightLocal`` — CL and lift force
     - ``RoskamParasiteDragBuildUp`` — CD0 for wing + VTP + fuselage
-    - Aviary ``InducedDrag``     — CDI using the model-scope
-                                   ``aircraft:wing:span_efficiency_factor``
-                                   (set by ``span_eff_correction`` ExecComp
-                                   in ``add_load_factor_subsystems``)
-    - ExecComp total drag        — DRAG = (CD0 + CDI) × q × S_ref
+    - ``_RoskamMissionInducedDrag`` — wing CDI using the model-scope
+                                      ``aircraft:wing:span_efficiency_factor``
+                                      set by ``span_eff_correction``
+    - ``_FuselageMissionLiftDrag`` — fuselage lift-induced drag
+    - ExecComp total drag        — DRAG = (CD0 + CDI + CDI_fus) * q * S_ref
 
     The geometry arrays required by ``RoskamParasiteDragBuildUp`` are
     assembled from individual ``aircraft:*`` trajectory parameters inside
@@ -142,7 +255,7 @@ class RoskamMissionAeroGroup(om.Group):
         # ── 2. Lift = Weight  →  cl, Dynamic.Vehicle.LIFT ────────────────────
         self.add_subsystem(
             Dynamic.Vehicle.LIFT,
-            LiftEqualsWeight(num_nodes=nn),
+            _LiftEqualsWeightLocal(num_nodes=nn),
             promotes_inputs=[
                 Aircraft.Wing.AREA,
                 Dynamic.Vehicle.MASS,
@@ -155,7 +268,7 @@ class RoskamMissionAeroGroup(om.Group):
         self.add_subsystem(
             'GeomAssembler',
             _GeomArrayAssembler(),
-            promotes_inputs=['aircraft:*'],
+            promotes_inputs=['aircraft:*', 'vtp_area', 'vtp_wetted_area', 'fuselage_exposed_wetted_area'],
             promotes_outputs=[
                 'wetted_area_arr',
                 'char_length_arr',
@@ -203,31 +316,42 @@ class RoskamMissionAeroGroup(om.Group):
 
         # ── 5. Induced drag (FLOPS InducedDrag, uses span_efficiency_factor) ──
         self.add_subsystem(
-            'InducedDrag',
-            InducedDrag(num_nodes=nn),
+            'WingInducedDrag',
+            _RoskamMissionInducedDrag(num_nodes=nn),
             promotes_inputs=[
-                Dynamic.Atmosphere.MACH,
-                Dynamic.Vehicle.LIFT,
-                Dynamic.Atmosphere.STATIC_PRESSURE,
-                Aircraft.Wing.AREA,
+                'cl',
                 Aircraft.Wing.ASPECT_RATIO,
                 Aircraft.Wing.SPAN_EFFICIENCY_FACTOR,
-                Aircraft.Wing.SWEEP,
-                Aircraft.Wing.TAPER_RATIO,
             ],
-            promotes_outputs=[('induced_drag_coeff', 'CDI')],
+            promotes_outputs=['CDI'],
         )
 
         # ── 6. CD = CD0 + CDI ─────────────────────────────────────────────────
         self.add_subsystem(
+            'FuselageLiftDrag',
+            _FuselageMissionLiftDrag(num_nodes=nn),
+            promotes_inputs=[
+                'cl',
+                'wing_CL_alpha',
+                Dynamic.Atmosphere.MACH,
+                'fuselage_base_area',
+                'fuselage_planform_area',
+                Aircraft.Wing.AREA,
+                'fuselage_fineness_ratio',
+            ],
+            promotes_outputs=['CDI_fus', 'mission_alpha'],
+        )
+
+        self.add_subsystem(
             'CDComp',
             om.ExecComp(
-                'CD = CD0 + CDI',
+                'CD = CD0 + CDI + CDI_fus',
                 CD0={'val': np.ones(nn), 'units': 'unitless'},
                 CDI={'val': np.ones(nn), 'units': 'unitless'},
+                CDI_fus={'val': np.zeros(nn), 'units': 'unitless'},
                 CD={'val': np.ones(nn), 'units': 'unitless'},
             ),
-            promotes_inputs=['CD0', 'CDI'],
+            promotes_inputs=['CD0', 'CDI', 'CDI_fus'],
             promotes_outputs=['CD'],
         )
 

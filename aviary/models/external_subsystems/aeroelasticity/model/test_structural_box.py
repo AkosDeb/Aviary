@@ -19,7 +19,7 @@ class TestWingboxStructuralEstimate(unittest.TestCase):
         prob.set_val(f'box.{Aircraft.Wing.AREA}', 0.8, units='m**2')
         prob.set_val(f'box.{Aircraft.Wing.SPAN}', 2.0, units='m')
         prob.set_val(f'box.{Aircraft.Wing.TAPER_RATIO}', 1.0)
-        prob.set_val(f'box.{Aircraft.Wing.THICKNESS_TO_CHORD}', 0.12)
+        prob.set_val(f'box.{AE.STRUCTURAL_THICKNESS_TO_CHORD}', 0.12)
         prob.run_model()
 
         assert_near_equal(prob.get_val(f'box.{AE.ELASTIC_AXIS_FRACTION}'), 0.375)
@@ -49,6 +49,25 @@ class TestWingboxStructuralEstimate(unittest.TestCase):
 
         self.assertGreater(high_ei, low_ei)
         self.assertGreater(high_gj, low_gj)
+
+    def test_structural_tc_changes_stiffness(self):
+        prob = om.Problem(name='test_wingbox_tc_stiffness', reports=False)
+        prob.model.add_subsystem('box', WingboxStructuralEstimate())
+        prob.setup()
+
+        stiffness = []
+        for tc in (0.05, 0.15, 0.18):
+            prob.set_val(f'box.{AE.STRUCTURAL_THICKNESS_TO_CHORD}', tc)
+            prob.run_model()
+            stiffness.append((
+                float(prob.get_val(f'box.{AE.BENDING_STIFFNESS}', units='N*m**2')[0]),
+                float(prob.get_val(f'box.{AE.TORSIONAL_RIGIDITY}', units='N*m**2')[0]),
+            ))
+
+        self.assertLess(stiffness[0][0], stiffness[1][0])
+        self.assertLess(stiffness[1][0], stiffness[2][0])
+        self.assertLess(stiffness[0][1], stiffness[1][1])
+        self.assertLess(stiffness[1][1], stiffness[2][1])
 
 
 if __name__ == '__main__':
