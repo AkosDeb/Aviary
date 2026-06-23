@@ -31,7 +31,7 @@ class SchrenkLiftDistribution(om.ExplicitComponent):
         self.add_input(AE.DESIGN_SPEED, val=550.0 / 3.6, units='m/s')
         self.add_input(AE.LOAD_FACTOR, val=1.0)
         self.add_input(AE.LOAD_LIFT_COEFFICIENT, val=1.0)
-        self.add_input(AE.AERO_CENTER_TO_EA_FRACTION, val=0.125)
+        self.add_input(AE.AERO_CENTER_TO_EA_FRACTION, val=0.125, units='unitless')
         self.add_input(AE.BENDING_STIFFNESS, val=1.0e5, units='N*m**2')
         self.add_input(AE.TORSIONAL_RIGIDITY, val=1.0e5, units='N*m**2')
 

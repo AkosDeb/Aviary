@@ -147,7 +147,7 @@ class QuasiSteadyFlutterScreen(om.ExplicitComponent):
 
         self.add_input(AE.LIFT_CURVE_SLOPE, val=2.0 * np.pi, units='unitless')
         self.add_input(AE.CONTROL_LIFT_DERIVATIVE, val=2.5, units='1/rad')
-        self.add_input(AE.AERO_CENTER_TO_EA_FRACTION, val=0.125)
+        self.add_input(AE.AERO_CENTER_TO_EA_FRACTION, val=0.125, units='unitless')
         # Cm/alpha about the AC (thin-airfoil default ≈ 0). EA-referenced value is
         # derived internally: cm_alpha_EA = cl_alpha * e_frac + cm_alpha_AC.
         self.add_input(AE.CONTROL_MOMENT_ALPHA_DERIVATIVE, val=-0.05, units='1/rad')

@@ -43,19 +43,37 @@ cd C:\Software\Repository\Aviary_clean
 python aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py
 ```
 
-Outputs → `outputs/run_horizontal_small_uav_try_v1_v1.29.0_out/`
+Outputs → `outputs/run_horizontal_small_uav_try_v1_v{MODEL_VERSION}_out/`
+
+The output directory name is built automatically from `MODEL_VERSION` in
+[horizontal_small_uav_config.py](horizontal_small_uav_config.py) — each version
+writes to its own folder, so old results are never overwritten.
+
+Current version (`v1.33.7`):
+
+```powershell
+# run
+python aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py
+```
+
+```text
+outputs/run_horizontal_small_uav_try_v1_v1.33.7_out/
+```
 
 ### Open dashboard (after opt completes)
 
 ```powershell
-aviary dashboard run_horizontal_small_uav_try_v1_v1.29.0
+aviary dashboard outputs/run_horizontal_small_uav_try_v1_v1.33.7_out
 ```
 
 ### One-liner: run opt then launch dashboard
 
 ```powershell
-python aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py; aviary dashboard run_horizontal_small_uav_try_v1_v1.29.0
+python aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py; aviary dashboard outputs/run_horizontal_small_uav_try_v1_v1.33.7_out
 ```
+
+> **Note:** if `MODEL_VERSION` has changed since this README was written, replace
+> `v1.33.7` with the value of `MODEL_VERSION` in `horizontal_small_uav_config.py`.
 
 ---
 
@@ -86,6 +104,32 @@ import run_horizontal_small_uav as m; m.PRINT_AERO_DETAIL = False; m.main()
 
 Or simply edit the constant at the top of [run_horizontal_small_uav.py](run_horizontal_small_uav.py)
 before running.
+
+---
+
+## Flutter Model Switch
+
+The active aeroelastic flutter constraint is controlled in
+[horizontal_small_uav_config.py](horizontal_small_uav_config.py):
+
+```python
+AEROELASTIC_FLUTTER_MODEL = 'beam_modal_3dof_pk'
+```
+
+Available modes:
+
+| Value | Active flutter constraint | What it builds |
+|---|---|---|
+| `beam_modal_3dof_pk` | `aeroelasticity:beam_modal_3dof_pk_flutter_speed_margin >= 0` | Builds `BeamModalFlutter`, including the spanwise modal structural/aero matrices used by the beam-modal flutter eigenanalysis |
+| `legacy_scalar` | `aeroelasticity:max_real_eigenvalue_at_design <= 0` | Skips `BeamModalFlutter` and the beam-modal spanwise structural matrices; uses the older scalar quasi-steady flutter screen |
+
+Important: `legacy_scalar` is not a complete return to the old pre-spanwise
+structure model. The Step-3 spanwise wingbox, Schrenk loads, spanwise mass, and
+equivalent-property components still run because `SpaJetiMassGroup`, divergence,
+and the scalar flutter screens consume those outputs.
+
+The terminal run header prints the selected mode and this distinction every time
+the optimization script starts.
 
 ---
 
@@ -226,7 +270,8 @@ is unified with the MAC geometry x-axis.
 |---|---|---|---|
 | Lateral load factor Ny | ≥ 7.0 | 550 km/h, 5 km ISA | see [README_lateral_stability.md] |
 | Longitudinal load factor Nz | ≥ 7.0 | 550 km/h, 5 km ISA | see [README_lateral_stability.md] |
-| M_crit margin | ≥ 0 | DASH_MACH + 0.05 = 0.57 | CL based on Nz_min; tighten via `M_CRIT_SAFETY_MARGIN` |
+| M_crit margin | ≥ 0 | DASH_MACH + 0.05 = 0.57 | Weisshaar Eq. 36, CL from Nz_min; see [README_lift_curve_slope.md — MachCriticalComp](../../aerodynamics/SpaJeti_based/README_lift_curve_slope.md#machcriticalcomp--mdd--mcrit) |
+| Flutter speed margin | ≥ 0 m/s | V_flutter ≥ V_dive = 1.25 × V_design (191 m/s) | `beam_modal_3dof_pk` or `legacy_scalar`; see [Flutter Model Switch](#flutter-model-switch) |
 | T/W at SLS | ≥ 1.5 | SLS, sea level | `scaled_sls_thrust ≥ 1.5 * m_gross * g` |
 | Engine mass | ≤ 5.0 kg | — | regression upper bound |
 | Fuel budget margin | ≥ 0 kg | — | see formula below |

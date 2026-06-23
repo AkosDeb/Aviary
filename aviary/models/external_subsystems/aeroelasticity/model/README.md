@@ -52,15 +52,19 @@ flow; this file is a quick map for the model files themselves.
 - Outputs modal dry frequencies, design-point maximum real eigenvalue, flutter
   speed, flutter margin, modal P-K speed, modal P-K frequency, modal P-K
   margin, modal damping, modal frequency, and critical mode.
-- Current role: reporting and calibration only, not the primary optimizer
-  constraint.
+- Current role: active optimizer constraint when
+  `AEROELASTIC_FLUTTER_MODEL = 'beam_modal_3dof_pk'`; skipped when the aircraft
+  config selects `legacy_scalar`. Legacy mode therefore avoids the beam-modal
+  spanwise structural matrices for flutter, but it still leaves the Step-3
+  spanwise structure/mass/equivalent-property components active for mass and
+  scalar checks.
 
 `flutter.py`
 
 - Lumped quasi-steady 3-DOF flutter screen using plunge, torsion, and control
   rotation.
-- Its design-point maximum real eigenvalue is currently the primary active
-  flutter stability constraint.
+- Its design-point maximum real eigenvalue is the active flutter stability
+  constraint when the aircraft config selects `legacy_scalar`.
 
 `pk_flutter.py`
 

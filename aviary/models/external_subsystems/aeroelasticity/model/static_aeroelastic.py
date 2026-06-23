@@ -13,7 +13,7 @@ class StaticAeroelastic(om.ExplicitComponent):
         self.add_input(Aircraft.Wing.SPAN, val=2.0, units='m')
         self.add_input(Aircraft.Wing.TAPER_RATIO, val=1.0)
         self.add_input(AE.TORSIONAL_STIFFNESS, val=1.0e4, units='N*m/rad')
-        self.add_input(AE.AERO_CENTER_TO_EA_FRACTION, val=0.125)
+        self.add_input(AE.AERO_CENTER_TO_EA_FRACTION, val=0.125, units='unitless')
         self.add_input(AE.LIFT_CURVE_SLOPE, val=2.0 * np.pi, units='unitless')
         self.add_input(AE.CONTROL_LIFT_DERIVATIVE, val=2.5, units='1/rad')
         self.add_input(AE.CONTROL_MOMENT_DERIVATIVE, val=-0.60, units='1/rad')

@@ -1261,6 +1261,16 @@ def dashboard(script_name, port=0, run_in_background=False):
             spajeti_aircraft_3d_file,
         )
 
+    spajeti_summary_file = reports_dir / 'spajeti_summary.html'
+    if os.path.isfile(spajeti_summary_file):
+        create_report_frame(
+            'Opt Summary',
+            results_tabs_list,
+            'Physical (unscaled) optimization results: DVs, constraints, and engine values.',
+            'html',
+            spajeti_summary_file,
+        )
+
     # Make the Aviary variables table pane
     if os.path.isfile(problem_recorder_path):
         try:

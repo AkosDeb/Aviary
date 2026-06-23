@@ -93,12 +93,25 @@ def configure_optimization(prob, optimizer, engine_mass_upper_kg):
     prob.model.add_constraint(
         AE.DIVERGENCE_SPEED_MARGIN, lower=0.0, units='m/s', ref=50.0,
     )
-    # Flutter: beam-modal 3-DOF P-K speed margin as the active constraint.
-    # V_flutter_3DOF >= V_dive (i.e. margin >= 0).  The old quasi-steady eigenvalue
-    # is retained as an informational output; its constraint is disabled.
-    prob.model.add_constraint(
-        AE.BEAM_MODAL_3DOF_PK_FLUTTER_SPEED_MARGIN, lower=0.0, units='m/s', ref=50.0,
-    )
+    if AEROELASTIC_FLUTTER_MODEL == 'legacy_scalar':
+        # Scalar quasi-steady flutter screen: stable when the design-point eigenvalue
+        # is non-positive.  Skips BeamModalFlutter.
+        prob.model.add_constraint(
+            AE.MAX_REAL_EIGENVALUE_AT_DESIGN, upper=0.0, units='1/s', ref=1.0,
+        )
+    elif AEROELASTIC_FLUTTER_MODEL == 'beam_modal_3dof_pk':
+        # Beam-modal 3-DOF P-K speed margin as the active constraint.
+        # V_flutter_3DOF >= V_dive (i.e. margin >= 0).
+        prob.model.add_constraint(
+            AE.BEAM_MODAL_3DOF_PK_FLUTTER_SPEED_MARGIN, lower=0.0, units='m/s', ref=50.0,
+        )
+    elif AEROELASTIC_FLUTTER_MODEL == 'none':
+        pass  # flutter unconstrained; AeroelasticityGroup still runs in legacy_scalar mode
+    else:
+        raise ValueError(
+            f'Unsupported AEROELASTIC_FLUTTER_MODEL={AEROELASTIC_FLUTTER_MODEL!r}. '
+            'Use "beam_modal_3dof_pk", "legacy_scalar", or "none".'
+        )
 
     prob.add_objective()
 

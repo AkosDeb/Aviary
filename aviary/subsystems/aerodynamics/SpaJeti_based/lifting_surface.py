@@ -240,7 +240,7 @@ class WingSurface(LiftingSurfaceGroup):
     """Wing lifting surface sub-chain.
 
     Extends the base Group with:
-    - An internal ``fuselage_diameter`` constant (from SurfaceConfig) at Group scope.
+    - A ``fuselage_diameter`` group input with a SurfaceConfig default.
     - ``ScholzWingletARCorrection`` (Scholz INCAS 2018) for H-tail VTP endplate effect.
     - ``LiftCurveSlopePolhamus`` wired with ``fuselage_diameter`` and ``surface_span``
       to activate the K_wf fuselage carry-through correction.
@@ -253,17 +253,13 @@ class WingSurface(LiftingSurfaceGroup):
     """
 
     def setup(self):
-        # Inject fuselage diameter as a Group-scope constant before parent setup
-        # so that the Polhamus component in _setup_lift_curve_slope can connect to it.
-        self.add_subsystem(
-            'fus_const',
-            om.IndepVarComp(
-                'fuselage_diameter',
-                val=float(self._cfg.fuselage_diameter),
-                units='m',
-                desc='Equivalent fuselage diameter for K_wf correction [m]',
-            ),
-            promotes_outputs=['fuselage_diameter'],
+        # The run script can promote this input from SuperellipseFuselageGeometry's
+        # canonical fuselage_equivalent_diameter.  The SurfaceConfig value remains
+        # the fallback default for standalone component use.
+        self.set_input_defaults(
+            'fuselage_diameter',
+            val=float(self._cfg.fuselage_diameter),
+            units='m',
         )
         # Both ar_correction and polhamus promote 'wing_span' to 'surface_span'; their
         # component-level defaults differ (ScholzWingletARCorrection uses 1.8 m, Polhamus

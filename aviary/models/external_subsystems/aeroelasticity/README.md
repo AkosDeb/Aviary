@@ -22,8 +22,8 @@ The model can currently:
   fuel, servo, and elevon assumptions;
 - compute geometry-derived H-wing VTP tip mass and pitch inertia for the
   upper/lower endplate pair on each wingtip;
-- reduce the spanwise beam back to equivalent scalar properties for the older
-  active constraints;
+- reduce the spanwise beam back to equivalent scalar properties for the scalar
+  fallback constraints and legacy screens;
 - run scalar divergence, reversal, quasi-steady flutter, and P-K flutter
   screens;
 - run a first beam-modal flutter screen using one finite-element bending mode
@@ -58,9 +58,9 @@ finite-element bending and torsion mode shapes, projects the structure into
 modal coordinates, and evaluates two two-mode aeroelastic stability screens:
 a quasi-steady state-space screen and a reduced-frequency Theodorsen P-K screen.
 
-The Step 4 screen is implemented, but it is still a reporting/calibration tool.
-The active optimizer constraints still use the scalar divergence and scalar
-quasi-steady flutter checks until the beam-modal method is calibrated.
+The Step 4 screen is implemented and can be the active optimizer flutter
+constraint. The aircraft config exposes a switch so long-running studies can
+fall back to the older scalar quasi-steady flutter screen.
 
 ## Signal Flow
 
@@ -93,19 +93,32 @@ StaticAeroelastic, QuasiSteadyFlutterScreen, PKFlutterAnalysis
   -> active scalar divergence, reversal, flutter, and P-K screening outputs
 
 BeamModalFlutter
-  -> reporting-only modal frequencies, modal lambda, modal flutter speed,
-     modal flutter margin, modal P-K flutter speed, modal P-K margin
+  -> optional active/reporting modal frequencies, modal lambda, modal flutter
+     speed, modal flutter margin, modal P-K flutter speed, modal P-K margin
 ```
 
 ## Active Optimization Constraints
 
-The active aeroelastic constraints are still based on the scalar models:
+The always-active aeroelastic constraint is:
 
 - `aeroelasticity:divergence_speed_margin >= 0`
-- `aeroelasticity:max_real_eigenvalue_at_design <= 0`
 
-The P-K outputs and beam-modal outputs are available for reporting and
-calibration, but they are not currently the primary optimizer constraints.
+The active flutter constraint depends on `AEROELASTIC_FLUTTER_MODEL` in
+`horizontal_small_uav_config.py`:
+
+- `beam_modal_3dof_pk`: uses
+  `aeroelasticity:beam_modal_3dof_pk_flutter_speed_margin >= 0` and builds
+  `BeamModalFlutter`, including the spanwise modal structural/aerodynamic
+  matrices used for the beam-modal flutter eigenanalysis.
+- `legacy_scalar`: skips `BeamModalFlutter` and uses
+  `aeroelasticity:max_real_eigenvalue_at_design <= 0`. In this mode the
+  aeroelastic flutter analysis does not build the spanwise modal structural
+  matrices.
+
+The spanwise wingbox, mass distribution, and equivalent-property path still runs
+in both modes because the SpaJeti mass model consumes those structural arrays.
+So `legacy_scalar` is a cheaper flutter-analysis fallback, not a complete
+rollback to a pre-spanwise structure/mass model.
 
 ## Component Summary
 

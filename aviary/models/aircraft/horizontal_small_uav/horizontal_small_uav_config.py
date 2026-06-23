@@ -23,7 +23,7 @@ OUTPUT_ROOT = REPO_ROOT / 'outputs'
 #   patch (x.y.Z) -- bug fix, doc tweak, parameter change
 #   minor (x.Y.0) -- new physics component or constraint
 #   major (X.0.0) -- architectural redesign (new DV set, new EOM, new mission)
-MODEL_VERSION = '1.33.0'
+MODEL_VERSION = '1.35.0'
 PROBLEM_NAME = 'run_horizontal_small_uav_try_v1'
 VERSIONED_RUN_NAME = f'{PROBLEM_NAME}_v{MODEL_VERSION}'
 OUTPUT_DIR = OUTPUT_ROOT / f'{VERSIONED_RUN_NAME}_out'
@@ -31,6 +31,14 @@ OUTPUT_DIR = OUTPUT_ROOT / f'{VERSIONED_RUN_NAME}_out'
 # ── Custom variable names ─────────────────────────────────────────────────────
 AVAILABLE_FUEL = 'horizontal_small_uav:available_fuel'
 FUEL_BUDGET_MARGIN = 'horizontal_small_uav:fuel_budget_margin'
+
+# ── Fuel tank geometry ─────────────────────────────────────────────────────────
+# Two-tank layout: front tank near wing LE, rear tank near engine station.
+# Convention: x positive FORWARD (nose = 0), negative = aft of nose.
+# Matches SpaJetiMassGroup / FuelTankComp internal frame.
+FRONT_TANK_X_M = -0.85    # front tank centroid [m]  (near wing LE, ~42.5 % of 2 m fus)
+REAR_TANK_X_M = -0.95     # rear tank centroid  [m]  (near engine, ~47.5 % of 2 m fus)
+FUEL_DISTRIBUTION = 0.5   # fraction in front tank (0 = all rear, 1 = all front)
 
 # ── Mass parameters (design envelope) ─────────────────────────────────────────
 EMPTY_MASS_KG = 7
@@ -52,11 +60,20 @@ CONSTRAINT_Q_PA = 8_581.0
 # not used by this local geometry path.
 FUSELAGE_ROUNDED_SQUARE_SIDE_M = 0.30
 FUSELAGE_MAX_WIDTH_M = FUSELAGE_ROUNDED_SQUARE_SIDE_M
+# Nose contour power-law exponent: s = (x/L_nose)^p
+#   p = 1.0  → linear cone (old smoothstep was similar)
+#   p = 0.5  → parabolic ogive; closely approximates a hemisphere profile (default)
+#   p = 0.333→ cubic-root; matches a spherical cap even more closely
+FUSELAGE_NOSE_TYPE = 'ellipsoid'
+FUSELAGE_NOSE_ASPECT_RATIO = 2.0
+FUSELAGE_NOSE_POWER_EXPONENT = 0.5
 FUSELAGE_MAX_HEIGHT_M = FUSELAGE_ROUNDED_SQUARE_SIDE_M
 FUSELAGE_NOSE_LENGTH_FRACTION = 0.20
-FUSELAGE_TAIL_LENGTH_FRACTION = 0.35
+FUSELAGE_TAIL_LENGTH_FRACTION = 0.20
+FUSELAGE_AFT_BASE_MODE = 'engine'  # 'engine' or 'fixed'
 FUSELAGE_BASE_WIDTH_FRACTION = 0.20
 FUSELAGE_BASE_HEIGHT_FRACTION = 0.20
+FUSELAGE_AFT_ENGINE_CLEARANCE_M = 0.025
 FUSELAGE_SUPERELLIPSE_EXPONENT = 4.0
 
 # ── Fuselage equivalent diameter for K_wf ─────────────────────────────────────
@@ -172,6 +189,25 @@ ISA_5KM_DENSITY_KGM3 = 0.7357  # kg/m³
 # MAX_REAL_EIGENVALUE_AT_DESIGN output as the optimizer constraint (exact CS
 # derivatives); FLUTTER_SPEED_MARGIN is reported for information only.
 DIVE_SPEED_FACTOR = 1.25
+# Active flutter constraint/model:
+#   'beam_modal_3dof_pk'
+#       Current higher-fidelity spanwise beam-modal P-K path.
+#       Builds BeamModalFlutter, finite-element bending/torsion modes, and the
+#       beam-modal structural/aero matrices used by the active flutter margin.
+#       WARNING: uses finite-difference partials -- very slow in optimization.
+#   'legacy_scalar'
+#       Scalar quasi-steady flutter constraint (MAX_REAL_EIGENVALUE_AT_DESIGN <= 0).
+#       Skips BeamModalFlutter; Step-3 spanwise components still run.
+#   'none'
+#       No flutter constraint added to the optimizer. AeroelasticityGroup still
+#       runs in legacy_scalar mode so divergence and structural outputs are live,
+#       but flutter is unconstrained. Use when flutter physics is under development
+#       or for baseline range runs without structural limits.
+#
+# Note: legacy_scalar is not a full pre-spanwise rollback. The Step-3 spanwise
+# wingbox, Schrenk loads, spanwise mass, and equivalent-property components still
+# run because SpaJetiMassGroup and the scalar divergence screen consume them.
+AEROELASTIC_FLUTTER_MODEL = 'none'
 # AERO_REQUIRED_SPEED_MS is computed at runtime: DIVE_SPEED_FACTOR * (550.0 / 3.6)
 
 # ── Output detail flag ────────────────────────────────────────────────────────

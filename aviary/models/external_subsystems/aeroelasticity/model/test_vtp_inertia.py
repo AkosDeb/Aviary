@@ -9,7 +9,7 @@ from aviary.variable_info.variables import Aircraft
 
 class TestVTPTipInertia(unittest.TestCase):
     def make_problem(self):
-        prob = om.Problem(name='test_vtp_tip_inertia', reports=False)
+        prob = om.Problem(reports=False)
         prob.model.add_subsystem('vtp', VTPTipInertia())
         prob.setup(force_alloc_complex=True)
 
@@ -80,6 +80,24 @@ class TestVTPTipInertia(unittest.TestCase):
         high_mass = float(prob.get_val(f'vtp.{AE.VTP_TIP_MASS}', units='kg')[0])
         high_inertia = float(prob.get_val(f'vtp.{AE.VTP_TIP_PITCH_INERTIA}', units='kg*m**2')[0])
 
+        self.assertGreater(high_mass, low_mass)
+        self.assertGreater(high_inertia, low_inertia)
+
+    def test_design_bounds_have_physical_tip_mass_and_inertia(self):
+        prob = self.make_problem()
+        values = []
+        for span in (0.15, 0.60):
+            prob.set_val(f'vtp.{Aircraft.VerticalTail.SPAN}', span, units='m')
+            prob.run_model()
+            values.append((
+                float(prob.get_val(f'vtp.{AE.VTP_TIP_MASS}', units='kg')[0]),
+                float(prob.get_val(f'vtp.{AE.VTP_TIP_PITCH_INERTIA}', units='kg*m**2')[0]),
+            ))
+
+        low_mass, low_inertia = values[0]
+        high_mass, high_inertia = values[1]
+        self.assertGreater(low_mass, 0.0)
+        self.assertGreater(low_inertia, 0.0)
         self.assertGreater(high_mass, low_mass)
         self.assertGreater(high_inertia, low_inertia)
 

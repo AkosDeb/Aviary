@@ -15,6 +15,13 @@ python -m aviary.visualization.plot_aircraft aviary/models/aircraft/small_uav/sm
 python -m aviary.visualization.plot_aircraft small_uav.csv \
     --nose-frac 0.20 --tail-frac 0.35 \
     --base-w-frac 0.20 --base-h-frac 0.20 --exponent 4.0
+
+# horizontal-small-UAV style ellipsoid nose and engine-sized aft base:
+python -m aviary.visualization.plot_aircraft \
+    aviary/models/aircraft/horizontal_small_uav/horizontal_small_uav.csv \
+    --nose-type ellipsoid --nose-aspect-ratio 2.0 \
+    --tail-frac 0.20 --exponent-blend-frac 0.10 \
+    --aft-base-diameter 0.1726
 ```
 
 **From Python:**
@@ -29,6 +36,11 @@ visualize('aviary/models/aircraft/small_uav/small_uav.csv',
           nose_frac=0.20, tail_frac=0.35,
           base_w_frac=0.20, base_h_frac=0.20,
           exponent=4.0)
+
+visualize('aviary/models/aircraft/horizontal_small_uav/horizontal_small_uav.csv',
+          nose_type='ellipsoid', nose_aspect_ratio=2.0,
+          tail_frac=0.20, exponent_blend_frac=0.10,
+          aft_base_diameter=0.1726)
 ```
 
 ## What Is Drawn
@@ -54,7 +66,11 @@ The fuselage cross-section at each station is a superellipse:
 
 where `a = width/2`, `b = height/2`, and `n` is the exponent.
 
-The longitudinal profile uses three regions:
+The longitudinal profile uses three regions. For `nose_type='power_law'`, the
+nose uses the `nose_frac` length and `nose_power_exponent` profile. For
+`nose_type='ellipsoid'`, the nose length is `nose_aspect_ratio * max_width / 2`;
+sections are circular (`n=2`) through the nose, then blend to the body exponent
+over `exponent_blend_frac` of fuselage length.
 
 | Region | x/L range | Width / height |
 |--------|-----------|----------------|
@@ -62,7 +78,7 @@ The longitudinal profile uses three regions:
 | Mid-body | `nose_frac … 1-tail_frac` | constant max_width × max_height |
 | Aft body | `1-tail_frac … 1` | smoothstep from max → `base_w_frac × max_width` (and `base_h_frac × max_height`) |
 
-These parameters must be set to match the `SuperellipseFuselageGeometry` component inputs used in the actual model. The visualizer defaults to the SpaJeti baseline.
+These parameters must be set to match the `SuperellipseFuselageGeometry` component inputs used in the actual model. The visualizer defaults to the SpaJeti baseline. For aft-mounted engines, `--aft-base-diameter` can be used directly, or `--aft-engine-clearance` can be added to the CSV nacelle diameter to derive the aft base fractions.
 
 ### Superellipse parameter table
 
@@ -73,6 +89,12 @@ These parameters must be set to match the `SuperellipseFuselageGeometry` compone
 | Aft width fraction | `base_w_frac` | `--base-w-frac` | 0.20 | `base_width_fraction` |
 | Aft height fraction | `base_h_frac` | `--base-h-frac` | 0.20 | `base_height_fraction` |
 | Cross-section exponent | `exponent` | `--exponent` | 4.0 | `superellipse_exponent` |
+| Nose type | `nose_type` | `--nose-type` | `power_law` | component option `nose_type` |
+| Nose power exponent | `nose_power_exponent` | `--nose-power-exponent` | 0.5 | `nose_power_exponent` |
+| Nose aspect ratio | `nose_aspect_ratio` | `--nose-aspect-ratio` | 2.0 | `nose_aspect_ratio` |
+| Exponent blend fraction | `exponent_blend_frac` | `--exponent-blend-frac` | 0.10 | exponent transition length |
+| Aft base diameter | `aft_base_diameter` | `--aft-base-diameter` | None | derived base fractions |
+| Aft engine clearance | `aft_engine_clearance` | `--aft-engine-clearance` | None | engine diameter + clearance |
 
 ## Wing Chord Calculation
 

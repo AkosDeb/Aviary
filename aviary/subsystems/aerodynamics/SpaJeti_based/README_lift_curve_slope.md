@@ -317,3 +317,103 @@ The AR < 2 threshold is a calibration limit, not a mathematical failure.
 The formula still returns a finite number for AR < 2, but the Polhamus
 accuracy assumption degrades significantly below this limit. For AR < 1 use
 a vortex-lattice or panel-method result instead.
+
+---
+
+## MachCriticalComp — M_DD / M_crit
+
+**File:** `mach_critical.py`
+**Reference:** Weisshaar (2024), Eq. 36 — best directly-solvable M_DD form ranked against 20 empirical M_crit formulas (SEE = 3.95 %).
+
+### Physical model
+
+A wing section enters the transonic regime when local flow first reaches Mach 1 — the critical Mach M_crit. Drag divergence Mach M_DD is the slightly higher speed at which wave drag begins to rise rapidly (Shevell definition: dC_D/dM = 0.1). The Weisshaar formula solves directly for M_DD:
+
+```
+M_DD = K_A / cos(φ₂₅) − (t/c) / cos²(φ₂₅) − CL / (10 · cos³(φ₂₅))
+```
+
+where:
+- `K_A` = 0.887 — Korn airfoil technology factor (conventional subsonic sections; 0.95 for supercritical)
+- `φ₂₅` — quarter-chord sweep angle
+- `t/c` — thickness-to-chord ratio (from `AirfoilConstantsComp` / `section_tc` design variable)
+- `CL` — wing lift coefficient at the design condition (see below)
+
+M_crit is recovered from M_DD via the Shevell wave-drag model (20·(M − M_crit)⁴):
+
+```
+M_crit = M_DD − (0.1/80)^(1/3)   ≈   M_DD − 0.1077
+```
+
+### CL derivation from Nz requirement
+
+The CL used in the Weisshaar formula is **not** CL_alpha × alpha_max (the stall CL).
+It is derived from the minimum longitudinal load-factor requirement so it reflects the
+actual wing CL at the design dash condition:
+
+```
+CL = Nz_min × m × g / (q × S)
+```
+
+At the design point (Nz_min = 7, m = 15 kg, q = 8 581 Pa, S ≈ 0.45 m²) this gives
+CL ≈ 0.24, versus CL_max ≈ 1.42 with the stall alpha — a 5× difference that made
+the constraint infeasible when the stall CL was used (pre-2026-06-15 baseline).
+
+### Margin definition
+
+```
+mach_crit_margin = M_crit − mach_upper_bound ≥ 0
+
+mach_upper_bound = DASH_MACH + M_CRIT_SAFETY_MARGIN  (= 0.52 + 0.05 = 0.57)
+```
+
+The constraint is on M_crit (onset of local sonic flow), not M_DD, so the
+design stays below the point of actual wave-drag rise with a conservative margin.
+
+### M_DD sensitivity
+
+M_DD **decreases** (constraint tightens) with:
+- increasing t/c (thicker wing → lower M_DD)
+- increasing CL (higher Nz_min or lower q/S → lower M_DD)
+- reducing sweep (unswept wing → lower M_DD for the same t/c)
+
+### Inputs and outputs
+
+| Variable | Default | Units | Description |
+|----------|---------|-------|-------------|
+| `surface_sweep_c4` | 0.0 | deg | Quarter-chord sweep φ₂₅ |
+| `section_tc` | 0.12 | — | t/c (from `AirfoilConstantsComp`; wired from `wing_section_tc` DV) |
+| `nz_min` | 7.0 | — | Minimum longitudinal load-factor requirement |
+| `aircraft_mass` | 15.0 | kg | Aircraft mass at the design point |
+| `dynamic_pressure` | 8 581 | Pa | Dynamic pressure q at the design point |
+| `wing_area` | 0.5 | m² | Wing reference area S |
+| `mach_upper_bound` | 0.57 | — | DASH_MACH + M_CRIT_SAFETY_MARGIN |
+| **`M_DD`** | — | — | Drag-divergence Mach (informational only) |
+| **`M_crit`** | — | — | Critical Mach (onset of local sonic flow) |
+| **`mach_crit_margin`** | — | — | M_crit − mach_upper_bound; constrain ≥ 0 |
+
+Constructor argument: `k_a` (default 0.887; use 0.95 for supercritical sections).
+
+### UAV numerical example
+
+Design point: sweep = 0°, t/c = 0.12, Nz_min = 7, m = 15 kg, q = 8 581 Pa, S = 0.45 m², mach_upper_bound = 0.57.
+
+```
+CL     = 7 × 15 × 9.807 / (8581 × 0.45)  = 1030 / 3861  = 0.267
+M_DD   = 0.887/1 − 0.12/1 − 0.267/10     = 0.887 − 0.120 − 0.0267 = 0.740
+M_crit = 0.740 − 0.108                    = 0.632
+margin = 0.632 − 0.57                     = +0.062  ✓
+```
+
+At t/c = 0.08 (thinner wing, harder M_crit target):
+
+```
+CL     = 0.267  (unchanged — depends on Nz, not t/c)
+M_DD   = 0.887 − 0.08 − 0.0267 = 0.780
+M_crit = 0.780 − 0.108          = 0.672
+margin = 0.672 − 0.57           = +0.102  ✓
+```
+
+TOOD verification (Weisshaar at t/c = 0.08): M_crit = 0.5885 is reported for an
+earlier CL convention (CL_max); the 2026-06-15 correction uses CL from Nz_min
+instead, which is why the post-fix margin is larger.

@@ -507,6 +507,16 @@ def print_parasite_drag_detail(prob):
 
 def print_run_header(MODEL_VERSION, OPTIMIZER):
     _require_context()
+    flutter_constraint = (
+        'lambda_max(design) <= 0'
+        if AEROELASTIC_FLUTTER_MODEL == 'legacy_scalar'
+        else f'V_flutter_3DOF >= {AERO_REQUIRED_SPEED_MS:.1f} m/s'
+    )
+    flutter_mode_note = (
+        'skips BeamModalFlutter modal matrices; keeps spanwise mass/equivalent path'
+        if AEROELASTIC_FLUTTER_MODEL == 'legacy_scalar'
+        else 'builds BeamModalFlutter spanwise modal flutter matrices'
+    )
     print('\n' + '=' * 70)
     print('HORIZONTAL-TAIL SMALL UAV RANGE OPTIMIZATION')
     print(f'  Version         : v{MODEL_VERSION}  (SpaJeti v1.0.0 H-wing)')
@@ -514,7 +524,9 @@ def print_run_header(MODEL_VERSION, OPTIMIZER):
     print('  Design variables: wing span, wing area, VTP span, wing section t/c, scaled SLS thrust, phase Mach')
     print('  Constraints     : Ny >= 7, Nz >= 7 (550 km/h, 5 km), T/W >= 1.5, fuel,')
     print(f'                    M_crit >= {MACH_UPPER_BOUND:.2f} (DASH + {M_CRIT_SAFETY_MARGIN:.2f}),')
-    print(f'                    V_div >= {AERO_REQUIRED_SPEED_MS:.1f} m/s, lambda_max(design) <= 0')
+    print(f'                    V_div >= {AERO_REQUIRED_SPEED_MS:.1f} m/s, {flutter_constraint}')
+    print(f'  Flutter model   : {AEROELASTIC_FLUTTER_MODEL}')
+    print(f'                    {flutter_mode_note}')
     print('  Objective       : maximize range')
     print(f'  Method          : {OPTIMIZER} gradient-based')
     print('=' * 70 + '\n')
@@ -561,8 +573,6 @@ def print_optimization_summary(
     print_result('Fuselage d_eq geom', safe_get(prob, 'fuselage_equivalent_diameter', 'm'), 'm')
     print_result('Fuselage fineness geom', safe_get(prob, 'fuselage_fineness_ratio'), '')
 
-    print('\nLoad Factors (550 km/h, 5 km ISA):')
-    print('-' * 70)
     print('\nWing MAC Geometry:')
     print('-' * 70)
     print_result('Wing root chord c_r',           safe_get(prob, 'wing_root_chord',  'm'), 'm')
@@ -623,16 +633,14 @@ def print_optimization_summary(
     print_result('Flutter speed V_f (QS bisection)', flutter_v, 'm/s [informational]')
     print_result('Flutter speed margin',           flutter_m,  'm/s [informational]')
     print_result('lambda_max at design [max 0]',   lambda_max, '1/s')
-    print_result(
-        'Beam-modal f_bend',
-        safe_get(prob, AE.BEAM_MODAL_BENDING_FREQUENCY, 'Hz'),
-        'Hz [Step 4]',
-    )
-    print_result(
-        'Beam-modal f_torsion',
-        safe_get(prob, AE.BEAM_MODAL_TORSION_FREQUENCY, 'Hz'),
-        'Hz [Step 4]',
-    )
+    f_bend = safe_get(prob, AE.BEAM_MODAL_BENDING_FREQUENCY, 'Hz')
+    f_tors = safe_get(prob, AE.BEAM_MODAL_TORSION_FREQUENCY, 'Hz')
+    print_result('Beam-modal f_bend',    f_bend, 'Hz [Step 4]')
+    print_result('Beam-modal f_torsion', f_tors, 'Hz [Step 4]')
+    if not any(isinstance(v, str) for v in (f_bend, f_tors)):
+        if f_tors <= f_bend:
+            print('  WARNING: torsion freq <= bending freq — mode ordering wrong; '
+                  'check stiffness/mass inputs.')
     print_result(
         'Beam-modal lambda_max',
         safe_get(prob, AE.BEAM_MODAL_MAX_REAL_EIGENVALUE_AT_DESIGN, '1/s'),
@@ -664,15 +672,16 @@ def print_optimization_summary(
         'm/s',
     )
     print_result(
-        'Beam-modal 3DOF PK flutter margin [ACTIVE CONSTRAINT]',
+        'Beam-modal 3DOF PK flutter margin',
         safe_get(prob, AE.BEAM_MODAL_3DOF_PK_FLUTTER_SPEED_MARGIN, 'm/s'),
-        'm/s',
+        'm/s [ACTIVE]' if AEROELASTIC_FLUTTER_MODEL == 'beam_modal_3dof_pk' else 'm/s [inactive]',
     )
-    print_result(
-        'Beam-modal control frequency',
-        safe_get(prob, AE.BEAM_MODAL_CONTROL_FREQUENCY, 'Hz'),
-        'Hz',
-    )
+    f_ctrl = safe_get(prob, AE.BEAM_MODAL_CONTROL_FREQUENCY, 'Hz')
+    print_result('Beam-modal control frequency', f_ctrl, 'Hz')
+    if not any(isinstance(v, str) for v in (f_tors, f_ctrl)):
+        if f_ctrl <= f_tors:
+            print('  WARNING: control freq <= torsion freq — '
+                  'check CONTROL_STIFFNESS / CONTROL_INERTIA inputs.')
     print_result(
         'Beam-modal PK freq',
         safe_get(prob, AE.BEAM_MODAL_PK_FLUTTER_FREQUENCY, 'Hz'),
@@ -683,6 +692,14 @@ def print_optimization_summary(
         safe_get(prob, AE.BEAM_MODAL_PK_CONVERGED),
         '[1=yes]',
     )
+    pk3_converged = safe_get(prob, AE.BEAM_MODAL_3DOF_PK_CONVERGED)
+    print_result(
+        'Beam-modal 3DOF PK converged',
+        pk3_converged,
+        '[1=yes]',
+    )
+    if AEROELASTIC_FLUTTER_MODEL == 'beam_modal_3dof_pk' and pk3_converged == 0.0:
+        print('  WARNING: Beam-modal 3DOF P-K did not converge; flutter speed may be the fallback bound.')
     print_result('PK flutter speed (Theodorsen)',   pk_v,       'm/s [informational]')
     print_result('PK flutter speed margin',         pk_m,       'm/s [informational]')
     print()
@@ -759,37 +776,69 @@ def print_optimization_summary(
     # but actual t/c = 0.62 * ref(0.15) = 0.093 -- within [0.05, 0.18].
     # The values below come from prob.get_val() (actual unscaled model values).
     print('\n' + '=' * 70)
-    print('CONSTRAINT SATISFACTION (actual physical values from prob.get_val)')
-    print('  opt_report.html shows val/ref -- trust THIS table, not that one.')
+    print('CONSTRAINT SATISFACTION  (prob.get_val — actual physical values)')
+    print('  NOTE: opt_report.html and the dashboard show val/ref (scaled).')
+    print('  A constraint can look violated there but be satisfied here. Trust this.')
     print('=' * 70)
 
     def _ccheck(label, val, limit, sense='>=', unit=''):
         if isinstance(val, str):
-            print(f'  {label:<46}  {"not available"}')
+            print(f'  {label:<48}  not available')
             return
         ok = (val >= limit) if sense == '>=' else (val <= limit)
         status = 'OK' if ok else '*** VIOLATION ***'
-        print(f'  {label:<46} = {val:>10.4f} {unit}  [{sense}{limit}]  {status}')
+        print(f'  {label:<48} = {val:>10.4f} {unit}  [{sense}{limit}]  {status}')
 
-    _ccheck(f'Ny  (lateral load factor)',       safe_get(prob, 'Ny'),                       NY_MIN)
-    _ccheck(f'Nz  (longitudinal load factor)',   safe_get(prob, 'Nz'),                       NZ_MIN)
-    _ccheck(f'mach_crit_margin',                 safe_get(prob, 'mach_crit_margin'),          0.0)
-    _ccheck(f'divergence speed margin',
-            safe_get(prob, AE.DIVERGENCE_SPEED_MARGIN, 'm/s'),                               0.0, unit='m/s')
-    _ccheck(f'lambda_max at design point',
-            safe_get(prob, AE.MAX_REAL_EIGENVALUE_AT_DESIGN, '1/s'),                         0.0, sense='<=', unit='1/s')
-    _sls = safe_get(prob, av.Aircraft.Engine.SCALED_SLS_THRUST, 'N')
-    _sls_min = TW_MIN * MAX_TAKEOFF_MASS_KG * 9.80665
-    _ccheck(f'SLS thrust',                       _sls,                                        _sls_min, unit='N')
-    _ccheck(f'fuel budget margin',               safe_get(prob, FUEL_BUDGET_MARGIN, 'kg'),   0.0, unit='kg')
-    _eng = safe_get(prob, premission_propulsion_var(SmallTurbojetVariables.MASS), 'kg')
-    _ccheck(f'engine mass',                      _eng,                                        engine_mass_upper_kg, sense='<=', unit='kg')
+    def _dvcheck(label, val, lo, hi, unit=''):
+        if isinstance(val, str):
+            print(f'  {label:<48}  not available')
+            return
+        at_lo = abs(val - lo) < 1e-4 * max(abs(lo), 1.0)
+        at_hi = abs(val - hi) < 1e-4 * max(abs(hi), 1.0)
+        ok = lo <= val <= hi
+        bound_tag = ' << AT LOWER BOUND' if at_lo else (' ^^ AT UPPER BOUND' if at_hi else '')
+        status = 'OK' if ok else '*** OUT OF BOUNDS ***'
+        print(f'  {label:<48} = {val:>10.4f} {unit}  [{lo}, {hi}]  {status}{bound_tag}')
+
     print()
-    print('  DVs (opt_report shows val/ref; actual physical values below):')
-    _ccheck(f'  wing span',   safe_get(prob, av.Aircraft.Wing.SPAN,            'm'),   1.34, unit='m')
-    _ccheck(f'  wing area',   safe_get(prob, av.Aircraft.Wing.AREA,            'm**2'), 0.40, unit='m^2')
-    _ccheck(f'  VTP span',    safe_get(prob, av.Aircraft.VerticalTail.SPAN,    'm'),   0.15, unit='m')
-    _ccheck(f'  wing_section_tc', safe_get(prob, 'wing_section_tc'),                   0.05, unit='')
+    print('  Objective:')
+    _range = safe_get(prob, av.Mission.RANGE, 'km')
+    _fuel  = safe_get(prob, av.Mission.TOTAL_FUEL, 'kg')
+    _ccheck('  Range', _range, 0.0, unit='km')
+    _ccheck('  Total fuel burned', _fuel, 0.0, unit='kg')
+
+    print()
+    print('  Load constraints:')
+    _ccheck('  Ny  (lateral load factor)',     safe_get(prob, 'Ny'),                  NY_MIN)
+    _ccheck('  Nz  (longitudinal load factor)', safe_get(prob, 'Nz'),                 NZ_MIN)
+    _ccheck('  M_crit margin',                 safe_get(prob, 'mach_crit_margin'),    0.0)
+    _ccheck('  Divergence speed margin',
+            safe_get(prob, AE.DIVERGENCE_SPEED_MARGIN, 'm/s'),                        0.0, unit='m/s')
+    if AEROELASTIC_FLUTTER_MODEL == 'legacy_scalar':
+        _ccheck('  lambda_max at design point',
+                safe_get(prob, AE.MAX_REAL_EIGENVALUE_AT_DESIGN, '1/s'),              0.0, sense='<=', unit='1/s')
+    elif AEROELASTIC_FLUTTER_MODEL == 'beam_modal_3dof_pk':
+        _ccheck('  Beam-modal 3DOF PK flutter margin',
+                safe_get(prob, AE.BEAM_MODAL_3DOF_PK_FLUTTER_SPEED_MARGIN, 'm/s'),   0.0, unit='m/s')
+    else:
+        print(f'  {"Flutter":<48}   unconstrained  (AEROELASTIC_FLUTTER_MODEL="none")')
+
+    print()
+    print('  Engine:')
+    _sls     = safe_get(prob, av.Aircraft.Engine.SCALED_SLS_THRUST, 'N')
+    _sls_min = TW_MIN * MAX_TAKEOFF_MASS_KG * 9.80665
+    _eng     = safe_get(prob, premission_propulsion_var(SmallTurbojetVariables.MASS), 'kg')
+    _ccheck('  SLS thrust',   _sls, _sls_min, unit='N')
+    _ccheck('  Engine mass',  _eng, engine_mass_upper_kg, sense='<=', unit='kg')
+    _ccheck('  Fuel budget margin', safe_get(prob, FUEL_BUDGET_MARGIN, 'kg'), 0.0, unit='kg')
+
+    print()
+    print('  Design variables  [lower, upper]  — ^^ = at upper bound  << = at lower:')
+    _dvcheck('  Wing span',      safe_get(prob, av.Aircraft.Wing.SPAN,         'm'),    1.34, 1.8,  'm')
+    _dvcheck('  Wing area',      safe_get(prob, av.Aircraft.Wing.AREA,         'm**2'), 0.40, 0.75, 'm^2')
+    _dvcheck('  VTP span',       safe_get(prob, av.Aircraft.VerticalTail.SPAN, 'm'),    0.15, 0.6,  'm')
+    _dvcheck('  Wing t/c',       safe_get(prob, 'wing_section_tc'),                     0.05, 0.18, '')
+    _dvcheck('  SLS thrust (DV)', _sls,                                                 20.0, 2000.0, 'N')
 
     print('\n' + '=' * 70)
     print('OPTIMIZATION COMPLETE')

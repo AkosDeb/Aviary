@@ -28,6 +28,7 @@ from aviary.models.aircraft.reporting.dashboard_reports import (
     configure_dashboard_context,
     write_payload_range_report,
     write_spajeti_aircraft_3d_report,
+    write_optimization_summary_html,
 )
 from aviary.models.aircraft.reporting.printing_utils import (
     configure_print_context,
@@ -79,29 +80,6 @@ configure_dashboard_context(report_config)
 MACH_UPPER_BOUND = DASH_MACH + M_CRIT_SAFETY_MARGIN  # Used by MachCriticalComp
 AERO_REQUIRED_SPEED_MS = DIVE_SPEED_FACTOR * 550.0 / 3.6  # 190.97 m/s
 
-
-class FuelBudgetEstimate(om.ExplicitComponent):
-    """Fuel available after fixed masses and optimized engine mass are reserved."""
-
-    def setup(self):
-        self.add_input(av.Aircraft.Design.GROSS_MASS, val=15.0, units='kg')
-        self.add_input('structural_empty_mass', val=5.3, units='kg')
-        self.add_input(av.Aircraft.CrewPayload.TOTAL_PAYLOAD_MASS, val=2.5, units='kg')
-        self.add_input(av.Mission.TOTAL_FUEL, val=1.0, units='kg')
-        self.add_input('engine_mass', val=3.0, units='kg')
-        self.add_output(AVAILABLE_FUEL, val=2.5, units='kg')
-        self.add_output(FUEL_BUDGET_MARGIN, val=1.5, units='kg')
-        self.declare_partials('*', '*', method='fd')
-
-    def compute(self, inputs, outputs):
-        available_fuel = (
-            inputs[av.Aircraft.Design.GROSS_MASS]
-            - inputs['structural_empty_mass']
-            - inputs[av.Aircraft.CrewPayload.TOTAL_PAYLOAD_MASS]
-            - inputs['engine_mass']
-        )
-        outputs[AVAILABLE_FUEL] = available_fuel
-        outputs[FUEL_BUDGET_MARGIN] = available_fuel - inputs[av.Mission.TOTAL_FUEL]
 
 
 def premission_propulsion_var(name):
@@ -229,9 +207,15 @@ def add_load_factor_subsystems(prob):
     fixed.add_output('fus_tail_frac',    val=FUSELAGE_TAIL_LENGTH_FRACTION, units='unitless')
     fixed.add_output('fus_max_width',    val=FUSELAGE_MAX_WIDTH_M,  units='m')
     fixed.add_output('fus_max_height',   val=FUSELAGE_MAX_HEIGHT_M, units='m')
-    fixed.add_output('fus_base_width_frac',  val=FUSELAGE_BASE_WIDTH_FRACTION,  units='unitless')
-    fixed.add_output('fus_base_height_frac', val=FUSELAGE_BASE_HEIGHT_FRACTION, units='unitless')
+    fixed.add_output('fus_aft_engine_clearance', val=FUSELAGE_AFT_ENGINE_CLEARANCE_M, units='m',
+                     desc='Total aft fuselage base clearance added to turbojet diameter')
     fixed.add_output('fus_superellipse_exp', val=FUSELAGE_SUPERELLIPSE_EXPONENT, units='unitless')
+    fixed.add_output('fus_nose_power_exp',  val=FUSELAGE_NOSE_POWER_EXPONENT,   units='unitless',
+                     desc='Nose contour power-law exponent: s=(x/L_nose)^p. '
+                          '0.5=parabolic ogive, 1.0=cone')
+    fixed.add_output('fus_nose_aspect_ratio', val=FUSELAGE_NOSE_ASPECT_RATIO, units='unitless',
+                     desc='Ellipsoid nose length divided by radius. '
+                          '1.0=hemisphere, 2.0=prolate ellipsoid, 3.0=long radome')
     fixed.add_output('design_mach',      val=CONSTRAINT_MACH,     units='unitless',
                      desc='Mach at the constraint flight condition -- shared by all surface Polhamus instances')
     fixed.add_output('constraint_static_pressure', val=CRUISE_STATIC_PRESSURE_PA, units='Pa',
@@ -257,6 +241,56 @@ def add_load_factor_subsystems(prob):
     # â”€â”€ H-tail VTP geometry: span/chord -> area, AR, fuselage_vtp_span_ratio â”€â”€
     model.add_subsystem('htail_geom', HTailGeometry(), promotes=['*'])
 
+    if FUSELAGE_AFT_BASE_MODE == 'engine':
+        model.add_subsystem(
+            'aft_base_geometry',
+            om.ExecComp(
+                [
+                    'aft_base_diameter = engine_diameter + clearance',
+                    'fus_base_width_frac = (engine_diameter + clearance) / fus_max_width',
+                    'fus_base_height_frac = (engine_diameter + clearance) / fus_max_height',
+                ],
+                engine_diameter={'val': 0.14, 'units': 'm'},
+                clearance={'val': FUSELAGE_AFT_ENGINE_CLEARANCE_M, 'units': 'm'},
+                fus_max_width={'val': FUSELAGE_MAX_WIDTH_M, 'units': 'm'},
+                fus_max_height={'val': FUSELAGE_MAX_HEIGHT_M, 'units': 'm'},
+                aft_base_diameter={'val': 0.165, 'units': 'm'},
+                fus_base_width_frac={'val': 0.55, 'units': 'unitless'},
+                fus_base_height_frac={'val': 0.55, 'units': 'unitless'},
+            ),
+            promotes_inputs=[
+                ('engine_diameter', premission_propulsion_var(SmallTurbojetVariables.DIAMETER)),
+                ('clearance', 'fus_aft_engine_clearance'),
+                'fus_max_width',
+                'fus_max_height',
+            ],
+            promotes_outputs=['aft_base_diameter', 'fus_base_width_frac', 'fus_base_height_frac'],
+        )
+    elif FUSELAGE_AFT_BASE_MODE == 'fixed':
+        aft_base = om.IndepVarComp()
+        aft_base.add_output(
+            'fus_base_width_frac',
+            val=FUSELAGE_BASE_WIDTH_FRACTION,
+            units='unitless',
+        )
+        aft_base.add_output(
+            'fus_base_height_frac',
+            val=FUSELAGE_BASE_HEIGHT_FRACTION,
+            units='unitless',
+        )
+        aft_base.add_output(
+            'aft_base_diameter',
+            val=0.5 * FUSELAGE_MAX_WIDTH_M * FUSELAGE_BASE_WIDTH_FRACTION
+                + 0.5 * FUSELAGE_MAX_HEIGHT_M * FUSELAGE_BASE_HEIGHT_FRACTION,
+            units='m',
+        )
+        model.add_subsystem('aft_base_geometry', aft_base, promotes_outputs=['*'])
+    else:
+        raise ValueError(
+            f'Unsupported FUSELAGE_AFT_BASE_MODE={FUSELAGE_AFT_BASE_MODE!r}; '
+            'use "engine" or "fixed".'
+        )
+
     # VTP wetted area: 2 panels Ã— 2 sides, wingtip-mounted (no fuselage cutout).
     # Formula matches project Swet convention: (S_planform - S_inside_fuselage) Ã— 2
     # per panel, Ã— 2 panels. Feeds trajectory parameter 'vtp_wetted_area' so that
@@ -274,7 +308,7 @@ def add_load_factor_subsystems(prob):
     # â”€â”€ Parametric fuselage geometry: report-only until drag/CG integration â”€â”€
     model.add_subsystem(
         'superellipse_fuselage',
-        SuperellipseFuselageGeometry(),
+        SuperellipseFuselageGeometry(nose_type=FUSELAGE_NOSE_TYPE),
         promotes_inputs=[
             ('fuselage_length', av.Aircraft.Fuselage.LENGTH),
             ('max_width', 'fus_max_width'),
@@ -284,6 +318,8 @@ def add_load_factor_subsystems(prob):
             ('base_width_fraction', 'fus_base_width_frac'),
             ('base_height_fraction', 'fus_base_height_frac'),
             ('superellipse_exponent', 'fus_superellipse_exp'),
+            ('nose_power_exponent',   'fus_nose_power_exp'),
+            ('nose_aspect_ratio',     'fus_nose_aspect_ratio'),
         ],
         promotes_outputs=[
             'fuselage_planform_area',
@@ -316,11 +352,13 @@ def add_load_factor_subsystems(prob):
             'dynamic_pressure',
             'wing_x_apex',
             'wing_z_apex',
+            ('fuselage_diameter', 'fuselage_equivalent_diameter'),
         ],
         promotes_outputs=[
             ('surface_CL_alpha', 'wing_CL_alpha'),
             ('k_eff',            'k_h'),
             'AR_eff',
+            'K_wf',
             'M_DD',
             'M_crit',
             'mach_crit_margin',
@@ -443,24 +481,25 @@ def add_load_factor_subsystems(prob):
         ],
     )
 
-    # â”€â”€ Wire Roskam CDi into FLOPS mission polar via span efficiency factor â”€â”€â”€â”€
-    # FLOPS InducedDrag formula: CDi = CL^2 / (pi * AR_geo * e_span_eff)
-    # With e_span_eff = e_oswald * (AR_eff / AR_geo):
-    #   CDi_flops = CL^2 / (pi * AR_eff * e_oswald)  =  Roskam Eq. 4.8  âœ“
-    # e_oswald comes from RoskamInducedDragComp (Eq. 4.12); AR_eff from Scholz correction.
-    # aircraft:wing:span_efficiency_factor is NOT a pre-mission computed output --
-    # it is safe to promote our output to this name without a connection conflict.
+    # -- Wire endplate AR gain into mission polar via span efficiency factor ----
+    # Mission InducedDrag formula: CDi = CL^2 / (pi * AR_geo * e_span_eff)
+    # With e_span_eff = AR_eff / AR_geo this becomes:
+    #   CDi = CL^2 / (pi * AR_eff)   [perfect leading-edge suction, e_oswald = 1]
+    # This is the correct upper-bound (minimum CDi) at any cruise CL.
+    # The previous formula multiplied by e_oswald from RoskamInducedDragComp, which
+    # was evaluated at the Nz-constraint stall CL (~1.41) rather than cruise CL
+    # (~0.03), making e_span_eff physically inconsistent with the mission polar.
+    # Dropping e_oswald fixes the inconsistency; perfect LE suction is an acceptable
+    # upper-bound assumption at conceptual design stage (TOOD item 8 fix option 2).
     model.add_subsystem(
         'span_eff_correction',
         om.ExecComp(
-            'e_span_eff = e_oswald * AR_eff / AR_geo',
-            e_oswald={'val': 0.85, 'units': 'unitless'},
+            'e_span_eff = AR_eff / AR_geo',
             AR_eff={'val': 8.0, 'units': 'unitless'},
             AR_geo={'val': 7.0, 'units': 'unitless'},
-            e_span_eff={'val': 0.97, 'units': 'unitless'},
+            e_span_eff={'val': 1.14, 'units': 'unitless'},
         ),
         promotes_inputs=[
-            'e_oswald',
             'AR_eff',
             ('AR_geo', av.Aircraft.Wing.ASPECT_RATIO),
         ],
@@ -488,7 +527,14 @@ def add_aeroelasticity_subsystems(prob):
     # because it is computed outside pre_mission by add_load_factor_subsystems.
     model.add_subsystem(
         'aeroelasticity',
-        AeroelasticityGroup(material_name='aluminum_6061_t6'),
+        AeroelasticityGroup(
+            material_name='aluminum_6061_t6',
+            flutter_model=(
+                'legacy_scalar'
+                if AEROELASTIC_FLUTTER_MODEL == 'none'
+                else AEROELASTIC_FLUTTER_MODEL
+            ),
+        ),
         promotes_inputs=['*'],
         promotes_outputs=['*'],
     )
@@ -523,7 +569,7 @@ def add_aeroelasticity_subsystems(prob):
 
 
 def add_spajeti_mass_subsystems(prob):
-    """Add SpaJeti physics-based structural mass estimation to the model.
+    """Add SpaJeti physics-based mass, CG, and fuel budget to the model.
 
     Handles two impedance mismatches:
     1. Coordinate frame: run script 'wing_x_apex' is x-positive-AFT (0.80 m);
@@ -531,8 +577,8 @@ def add_spajeti_mass_subsystems(prob):
     2. Fuselage dimensions: promote from local IVC ('fus_max_width'/'fus_max_height')
        rather than Aircraft.Fuselage.MAX_WIDTH/MAX_HEIGHT from the CSV.
 
-    Outputs 'structural_empty_mass' = wing + fuselage + tail structural mass at
-    model scope so FuelBudgetEstimate can consume it.
+    SpaJetiMassGroup now owns structural_mass_sum and FuelBudgetComp internally;
+    AVAILABLE_FUEL and FUEL_BUDGET_MARGIN are promoted to model scope.
     """
     model = prob.model
 
@@ -565,6 +611,8 @@ def add_spajeti_mass_subsystems(prob):
             av.Aircraft.Fuselage.LENGTH,
             (av.Aircraft.Fuselage.MAX_WIDTH, 'fus_max_width'),
             (av.Aircraft.Fuselage.MAX_HEIGHT, 'fus_max_height'),
+            'fuselage_wetted_area',
+            'fuselage_centroid_x',
             av.Aircraft.HorizontalTail.AREA,
             av.Aircraft.VerticalTail.AREA,
             av.Aircraft.VerticalTail.SPAN,
@@ -572,53 +620,28 @@ def add_spajeti_mass_subsystems(prob):
             av.Aircraft.VerticalTail.TAPER_RATIO,
             AE.VTP_AREAL_DENSITY,
             AE.VTP_TIP_PANEL_COUNT,
+            av.Aircraft.Design.GROSS_MASS,
+            av.Aircraft.CrewPayload.TOTAL_PAYLOAD_MASS,
         ],
         promotes_outputs=[
             'wing_structural_mass',
             'fuselage_structural_mass',
             'htp_structural_mass',
             'vtp_structural_mass',
+            'structural_empty_mass',
+            'aircraft_zfw_x_cg',
+            ('available_fuel', AVAILABLE_FUEL),
+            ('fuel_budget_margin', FUEL_BUDGET_MARGIN),
         ],
     )
 
-    # Connect live engine mass (from optimizer) and mission fuel into the CG estimator
+    # Connect live engine mass (from optimizer) and mission fuel into mass group
     model.connect(
         premission_propulsion_var(SmallTurbojetVariables.MASS),
         'spajeti_mass.engine_mass',
     )
     model.connect(av.Mission.TOTAL_FUEL, 'spajeti_mass.fuel_mass')
 
-    model.add_subsystem(
-        'structural_mass_sum',
-        om.ExecComp(
-            'structural_empty_mass = (wing_structural_mass + fuselage_structural_mass'
-            ' + htp_structural_mass + vtp_structural_mass)',
-            wing_structural_mass={'val': 1.8, 'units': 'kg'},
-            fuselage_structural_mass={'val': 2.2, 'units': 'kg'},
-            htp_structural_mass={'val': 0.36, 'units': 'kg'},
-            vtp_structural_mass={'val': 0.25, 'units': 'kg'},
-            structural_empty_mass={'val': 4.6, 'units': 'kg'},
-        ),
-        promotes=['*'],
-    )
-
-
-def add_fuel_budget_constraint(prob):
-    prob.model.add_subsystem(
-        'fuel_budget_estimate',
-        FuelBudgetEstimate(),
-        promotes_inputs=[
-            av.Aircraft.Design.GROSS_MASS,
-            'structural_empty_mass',
-            av.Aircraft.CrewPayload.TOTAL_PAYLOAD_MASS,
-            av.Mission.TOTAL_FUEL,
-        ],
-        promotes_outputs=[AVAILABLE_FUEL, FUEL_BUDGET_MARGIN],
-    )
-    prob.model.connect(
-        premission_propulsion_var(SmallTurbojetVariables.MASS),
-        'fuel_budget_estimate.engine_mass',
-    )
 
 
 def remove_dashboard_incompatible_recorder(prob):
@@ -659,7 +682,6 @@ def build_problem():
     add_spajeti_mass_subsystems(prob)
     prob.add_phases()
     prob.add_post_mission_systems()
-    add_fuel_budget_constraint(prob)
     prob.link_phases()
 
     # Shared structural-box geometry used by both aeroelasticity and SpaJeti mass.
@@ -703,6 +725,7 @@ def main():
     remove_dashboard_incompatible_recorder(prob)
     payload_range_csv = write_payload_range_report(prob)
     spajeti_3d_html = write_spajeti_aircraft_3d_report(prob)
+    write_optimization_summary_html(prob, engine_mass_upper_kg, MODEL_VERSION)
 
     print_optimization_summary(
         prob,

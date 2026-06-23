@@ -132,8 +132,8 @@ class _GeomArrayAssembler(om.ExplicitComponent):
     Component order: 0 = wing, 1 = VTP, 2 = fuselage.
 
     Wing and VTP characteristic lengths are computed as area/span (average
-    chord).  Fuselage fineness ratio is computed as length/max_width.
-    These approximations are acceptable for preliminary design.
+    chord).  Fuselage fineness ratio is consumed from the canonical fuselage
+    geometry so parasite form factor and lift-drag use the same body definition.
     """
 
     def setup(self):
@@ -164,6 +164,7 @@ class _GeomArrayAssembler(om.ExplicitComponent):
         self.add_input('fuselage_exposed_wetted_area', val=0.585, units='m**2')
         self.add_input(Aircraft.Fuselage.LENGTH, val=2.0, units='m')
         self.add_input(Aircraft.Fuselage.MAX_WIDTH, val=0.15, units='m')
+        self.add_input('fuselage_fineness_ratio', val=8.0, units='unitless')
 
         # ── Array outputs (nc = 3) ────────────────────────────────────────────
         self.add_output('wetted_area_arr', val=np.ones(3), units='m**2')
@@ -180,7 +181,7 @@ class _GeomArrayAssembler(om.ExplicitComponent):
 
         wing_chord = _f(inputs[Aircraft.Wing.AREA]) / max(_f(inputs[Aircraft.Wing.SPAN]), 1e-6)
         vtp_chord = _f(inputs['vtp_area']) / max(_f(inputs[Aircraft.VerticalTail.SPAN]), 1e-6)
-        fus_f = _f(inputs[Aircraft.Fuselage.LENGTH]) / max(_f(inputs[Aircraft.Fuselage.MAX_WIDTH]), 1e-6)
+        fus_f = _f(inputs['fuselage_fineness_ratio'])
 
         outputs['wetted_area_arr'] = np.array([
             _f(inputs[Aircraft.Wing.WETTED_AREA]),
@@ -268,7 +269,13 @@ class RoskamMissionAeroGroup(om.Group):
         self.add_subsystem(
             'GeomAssembler',
             _GeomArrayAssembler(),
-            promotes_inputs=['aircraft:*', 'vtp_area', 'vtp_wetted_area', 'fuselage_exposed_wetted_area'],
+            promotes_inputs=[
+                'aircraft:*',
+                'vtp_area',
+                'vtp_wetted_area',
+                'fuselage_exposed_wetted_area',
+                'fuselage_fineness_ratio',
+            ],
             promotes_outputs=[
                 'wetted_area_arr',
                 'char_length_arr',

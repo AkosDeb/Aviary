@@ -4,7 +4,10 @@
       "Bash(python -c \"import aviary; print\\(aviary.__version__\\)\")",
       "Bash(python aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py)",
       "Bash(aviary dashboard *)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "PowerShell(python \"C:\\\\Users\\\\DEBREC~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Software-Repository-Aviary-clean\\\\38980bd1-4c31-4808-b998-e7b98b0a2963\\\\scratchpad\\\\fix_encoding.py\")",
+      "Bash(python -m pytest aviary/subsystems/mass/spajeti_based/ -x -q)",
+      "Bash(python -m aviary.visualization.visualize_fuselage_nose)"
     ]
   }
 }

@@ -1,5 +1,149 @@
 # SpaJeti v1.0.0 H-wing - Model Changelog
 
+## v1.33.7 - 2026-06-23 - Fix CDi / span-efficiency CL inconsistency (TOOD item 9)
+
+- `span_eff_correction` ExecComp in `run_horizontal_small_uav.py` changed from
+  `e_span_eff = e_oswald × AR_eff / AR_geo` to `e_span_eff = AR_eff / AR_geo`.
+- Root cause: `e_oswald` (Roskam Eq. 4.12) was evaluated at the Nz-constraint
+  stall CL (~1.41) via `LongitudinalLoadFactor`, not at cruise CL (~0.03), making
+  the span efficiency fed to the mission polar physically inconsistent.
+- Fix: drop `e_oswald` from `span_eff_correction` (option 2 from TOOD item 9).
+  `e_span_eff = AR_eff / AR_geo` assumes perfect leading-edge suction (upper-bound
+  CDi estimate, valid at conceptual design stage). `e_oswald` output from
+  `roskam_cdi` is retained for diagnostics.
+- `e_span_eff > 1` is correct when AR_eff > AR_geo (endplates reduce induced drag
+  below the isolated-wing elliptical value); no valid-range issue.
+
+Versioning note:
+- `PATCH` bump — corrects a pre-existing physics inconsistency in the mission polar
+  wiring without changing any optimizer variable definitions.
+
+---
+
+## v1.33.6 - 2026-06-23 - M_crit / MDD documentation (TOOD remaining steps 2)
+
+- Added `MachCriticalComp` section to `README_lift_curve_slope.md`:
+  - Weisshaar Eq. 36 M_DD formula with all terms explained.
+  - CL-from-Nz_min derivation (not CL_alpha × alpha_max) and rationale.
+  - M_crit = M_DD − (0.1/80)^(1/3) with Shevell wave-drag model context.
+  - Full inputs/outputs table with defaults.
+  - Numerical examples at t/c = 0.12 and t/c = 0.08 showing margin sign.
+- Updated `README.md` Constraints table:
+  - M_crit margin row Reference now links to the new `README_lift_curve_slope.md`
+    section instead of an inline description.
+  - Added Flutter speed margin row: V_flutter ≥ V_dive = 1.25 × V_design (191 m/s);
+    references the Flutter Model Switch section.
+- Marked TOOD.md M_crit / MDD "remaining steps 2" as DONE.
+
+Versioning note:
+- `PATCH` bump — documentation only, no optimizer physics changes.
+
+---
+
+## v1.33.5 - 2026-06-22 - Aeroelastic TODO validation pass
+
+- Added/expanded focused aeroelastic validations:
+  - assembled `AeroelasticityGroup` baseline smoke test with beam-modal mode;
+  - P-K 3DOF convergence assertion for the lightweight beam-modal case;
+  - GAF diagonal real-term sign check at positive reduced frequency;
+  - Garrick T10/T11 eta check from the analytic expressions;
+  - VTP tip mass/inertia lower/upper design-bound checks;
+  - spar default checks for front spar 0.15, rear spar 0.60, elastic axis 0.375.
+- Added a post-run console warning if beam-modal 3DOF P-K does not converge.
+- Cleaned aeroelastic fraction units so `aero_center_to_ea_fraction` and related
+  promoted connections are explicitly unitless.
+- Validation:
+  - full aeroelastic pytest folder: 50 passed;
+  - SpaJeti mass validation: 9 passed.
+
+Versioning note:
+- `PATCH` bump because this adds validation coverage, warning/reporting, and
+  metadata cleanup without changing optimizer physics.
+
+---
+
+## v1.33.4 - 2026-06-22 - Focused mass/aeroelastic validation
+
+- Added `aviary/models/external_subsystems/aeroelasticity/test_aeroelasticity_builder.py`
+  to guard the flutter switch:
+  - `beam_modal_3dof_pk` must build `beam_modal_flutter` and expose the
+    beam-modal 3-DOF P-K flutter margin.
+  - `legacy_scalar` must skip `beam_modal_flutter`, keep the scalar flutter
+    output, and omit the beam-modal 3-DOF P-K flutter margin.
+- Re-ran focused validation:
+  - SpaJeti mass validation: 9 passed.
+  - Spanwise/beam-modal aeroelastic model validation: 23 passed.
+  - Aeroelasticity builder flutter-switch validation: 2 passed.
+
+Versioning note:
+- `PATCH` bump because this adds regression coverage and records validation
+  status without changing optimizer physics.
+
+---
+
+## v1.33.3 - 2026-06-22 - Document flutter fallback behavior
+
+- Documented `AEROELASTIC_FLUTTER_MODEL` in the aircraft config, reporting
+  helper, aeroelasticity builder option, and aeroelasticity READMEs.
+- Clarified that `legacy_scalar` skips `BeamModalFlutter` and its spanwise modal
+  structural matrices for flutter, but still runs the Step-3 spanwise wingbox,
+  mass, Schrenk, and equivalent-property path because mass and scalar checks
+  consume those outputs.
+- Console run header now prints both the selected flutter model and the runtime
+  implication of that mode.
+
+Versioning note:
+- `PATCH` bump because this is documentation/reporting clarity around an
+  existing switch.
+
+---
+
+## v1.33.2 - 2026-06-22 - Mass validation completion and flutter model switch
+
+- Expanded the SpaJeti mass validation suite to 9 pytest checks:
+  - hand-calculated CG weighted-average smoke test;
+  - wing, VTP, propulsion, and group-level body-frame sign checks;
+  - wing mass sensitivity to spanwise semispan growth;
+  - VTP span/mass and rigid-translation CG checks;
+  - fuselage structural mass physical sensitivity checks;
+  - targeted `check_partials` smoke checks for the CS-safe mass components.
+- Finished derivative cleanup for `WingStructuralMass`, `TailStructuralMass`,
+  `VTPStructuralMass`, `PropulsionLocationComp`, and `SpaJetiCGEstimator` by
+  preserving complex-step perturbations and narrowing `declare_partials` to real
+  dependencies. `FuselageStructuralMass` intentionally remains FD because its
+  station/shape integration is piecewise.
+- Added `AEROELASTIC_FLUTTER_MODEL` in `horizontal_small_uav_config.py`:
+  - `beam_modal_3dof_pk` keeps the current beam-modal 3-DOF P-K flutter margin
+    as the active constraint.
+  - `legacy_scalar` skips `BeamModalFlutter` and reverts the active flutter
+    constraint to `MAX_REAL_EIGENVALUE_AT_DESIGN <= 0`.
+- Updated console reporting to show the active flutter model and the correct
+  active flutter constraint.
+
+Versioning note:
+- `PATCH` bump because this completes validation/derivative plumbing and adds a
+  runtime switch without changing the aircraft design-variable set.
+
+---
+
+## v1.33.1 - 2026-06-22 - Mass module validation and CS partial fixes
+
+- Added isolated pytest validations for the SpaJeti mass module:
+  - aircraft CG weighted-average math and empty/total mass bookkeeping;
+  - x-forward body-frame signs for wing, fuselage, VTP, engine, and fuel;
+  - wing mass increase when spanwise semispan stations increase;
+  - VTP mass increase when VTP span increases;
+  - propulsion/fuel location convention;
+  - full `SpaJetiMassGroup` baseline sign and total-mass consistency.
+- Fixed `VTPStructuralMass` and `PropulsionLocationComp` so their complex-step partial declarations preserve complex perturbations instead of casting through `float(...)`.
+- Narrowed their `declare_partials` calls to actual dependencies instead of all-to-all `*` declarations, reducing derivative bookkeeping noise.
+- Validation commands passed: `pytest aviary/subsystems/mass/spajeti_based/test/test_spajeti_mass_validation.py -q` and targeted `check_partials` smoke checks for VTP/propulsion location.
+
+Versioning note:
+- `PATCH` bump because this validates and fixes derivative plumbing in the existing v1.33.0 mass path.
+
+---
+
 ## v1.33.0 — 2026-06-17 — VTP structural mass estimation and propulsion CG wiring
 
 Reporting/organization cleanup:

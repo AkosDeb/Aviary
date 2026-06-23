@@ -29,8 +29,16 @@ def superellipse_area(width, height, exponent):
     """
     a = np.asarray(width, dtype=float) / 2.0
     b = np.asarray(height, dtype=float) / 2.0
-    n = float(exponent)
-    coeff = 4.0 * math.gamma(1.0 + 1.0 / n) ** 2 / math.gamma(1.0 + 2.0 / n)
+    n = np.asarray(exponent, dtype=float)
+    if n.ndim == 0:
+        n_float = float(n)
+        coeff = 4.0 * math.gamma(1.0 + 1.0 / n_float) ** 2 / math.gamma(1.0 + 2.0 / n_float)
+    else:
+        coeff = np.vectorize(
+            lambda n_i: 4.0
+            * math.gamma(1.0 + 1.0 / n_i) ** 2
+            / math.gamma(1.0 + 2.0 / n_i)
+        )(n)
     return coeff * a * b
 
 
@@ -42,10 +50,30 @@ def superellipse_width_height_distribution(
     tail_fraction,
     base_width_fraction,
     base_height_fraction,
+    nose_power_exponent=0.5,
+    nose_type='power_law',
+    nose_aspect_ratio=2.0,
+    fuselage_length=1.0,
 ):
-    """Return full width and height along the normalized fuselage length."""
+    """Return full width and height along the normalized fuselage length.
+
+    The nose contour follows a power-law profile:
+
+        s(t) = t ** nose_power_exponent,   t = x / L_nose ∈ [0, 1]
+
+    nose_power_exponent controls the nose openness:
+      1.0  → linear (conical)
+      0.5  → parabolic ogive  (default; approximates a hemisphere profile)
+      0.333→ cubic root        (closely matches a spherical cap)
+
+    The tail uses a cubic smoothstep (zero slope at both ends, unchanged).
+    """
     x = np.asarray(x_over_length, dtype=float)
-    nose = float(nose_fraction)
+    nose_type = str(nose_type)
+    if nose_type == 'ellipsoid':
+        nose = float(nose_aspect_ratio) * float(max_width) / (2.0 * float(fuselage_length))
+    else:
+        nose = float(nose_fraction)
     tail = float(tail_fraction)
     body_start = nose
     body_end = 1.0 - tail
@@ -59,11 +87,19 @@ def superellipse_width_height_distribution(
 
     if nose > 0.0:
         t = np.clip(x[nose_mask] / nose, 0.0, 1.0)
-        nose_shape = _smoothstep(t)
+        if nose_type == 'ellipsoid':
+            nose_shape = np.sqrt(np.maximum(1.0 - (1.0 - t) ** 2, 0.0))
+        else:
+            # Power-law nose: t^p opens quickly (p<1) or slowly (p>1) from the tip.
+            # numpy correctly returns 0.0 for 0.0**p when p > 0, so no special casing needed.
+            nose_shape = t ** float(nose_power_exponent)
     else:
         nose_shape = np.ones(np.count_nonzero(nose_mask))
     width[nose_mask] = max_width * nose_shape
-    height[nose_mask] = max_height * nose_shape
+    if nose_type == 'ellipsoid':
+        height[nose_mask] = max_width * nose_shape
+    else:
+        height[nose_mask] = max_height * nose_shape
 
     width[body_mask] = max_width
     height[body_mask] = max_height
@@ -79,6 +115,66 @@ def superellipse_width_height_distribution(
     height[tail_mask] = max_height * tail_height_shape
 
     return width, height
+
+
+def superellipse_exponent_distribution(
+    x_over_length,
+    nose_fraction,
+    tail_fraction,
+    superellipse_exponent,
+    nose_type='power_law',
+    nose_aspect_ratio=2.0,
+    max_width=1.0,
+    fuselage_length=1.0,
+    blend_fraction=0.10,
+):
+    """Return the cross-section exponent along the normalized fuselage length."""
+    x = np.asarray(x_over_length, dtype=float)
+    exponent = float(superellipse_exponent)
+
+    if str(nose_type) != 'ellipsoid':
+        return np.full_like(x, exponent, dtype=float)
+
+    nose = float(nose_aspect_ratio) * float(max_width) / (2.0 * float(fuselage_length))
+    blend = max(float(blend_fraction), 0.0)
+
+    exponents = np.full_like(x, exponent, dtype=float)
+    exponents[x <= nose] = 2.0
+
+    if blend > 0.0:
+        blend_mask = (x > nose) & (x < nose + blend)
+        t = np.clip((x[blend_mask] - nose) / blend, 0.0, 1.0)
+        exponents[blend_mask] = 2.0 + (exponent - 2.0) * _smoothstep(t)
+
+    return exponents
+
+
+def _fuselage_x_distribution(
+    num_x,
+    nose_type,
+    nose_aspect_ratio,
+    max_width,
+    fuselage_length,
+    blend_fraction=0.10,
+):
+    """Return normalized fuselage stations with extra samples in the nose blend."""
+    x_norm = np.linspace(0.0, 1.0, num_x)
+
+    if str(nose_type) != 'ellipsoid':
+        return x_norm
+
+    nose = float(nose_aspect_ratio) * float(max_width) / (2.0 * float(fuselage_length))
+    blend_start = nose
+    blend_end = min(nose + float(blend_fraction), 1.0)
+    if blend_end <= blend_start:
+        return x_norm
+
+    base_in_blend = np.count_nonzero((x_norm > blend_start) & (x_norm < blend_end))
+    if base_in_blend <= 0:
+        return x_norm
+
+    extra = np.linspace(blend_start, blend_end, base_in_blend + 2)[1:-1]
+    return np.unique(np.concatenate((x_norm, extra)))
 
 
 def _superellipse_surface_points(width, height, exponent, theta):
@@ -97,9 +193,10 @@ def _mesh_surface_area(x, widths, heights, exponent, num_theta=96):
     """Return numerical superellipse loft surface area."""
     theta = np.linspace(0.0, 2.0 * np.pi, num_theta, endpoint=False)
     points = np.empty((len(x), num_theta, 3))
+    exponents = np.broadcast_to(np.asarray(exponent, dtype=float), widths.shape)
 
-    for i, (x_i, width, height) in enumerate(zip(x, widths, heights)):
-        y, z = _superellipse_surface_points(width, height, exponent, theta)
+    for i, (x_i, width, height, exp_i) in enumerate(zip(x, widths, heights, exponents)):
+        y, z = _superellipse_surface_points(width, height, exp_i, theta)
         points[i, :, 0] = x_i
         points[i, :, 1] = y
         points[i, :, 2] = z
@@ -137,6 +234,15 @@ class SuperellipseFuselageGeometry(om.ExplicitComponent):
         Aft-end width/height as fractions of the maximum dimensions.
     superellipse_exponent : unitless
         Cross-section exponent. n=2 is an ellipse; n=4 is rounded-rectangle-like.
+    nose_power_exponent : unitless
+        Power-law exponent for the nose contour profile. Controls how quickly
+        the cross-section opens from the tip:
+
+            s(t) = t ** p,   t = x / L_nose
+
+        p = 1.0  → linear / conical (sharp cone)
+        p = 0.5  → parabolic ogive  (default; approximates hemisphere profile)
+        p = 0.333→ cubic-root       (closely matches a spherical cap)
 
     Outputs
     -------
@@ -164,6 +270,7 @@ class SuperellipseFuselageGeometry(om.ExplicitComponent):
     def initialize(self):
         self.options.declare('num_x', default=81, types=int)
         self.options.declare('num_theta', default=96, types=int)
+        self.options.declare('nose_type', default='power_law', values=('power_law', 'ellipsoid'))
 
     def setup(self):
         self.add_input('fuselage_length', val=2.0, units='m')
@@ -174,6 +281,16 @@ class SuperellipseFuselageGeometry(om.ExplicitComponent):
         self.add_input('base_width_fraction', val=0.20, units='unitless')
         self.add_input('base_height_fraction', val=0.20, units='unitless')
         self.add_input('superellipse_exponent', val=4.0, units='unitless')
+        self.add_input(
+            'nose_power_exponent', val=0.5, units='unitless',
+            desc='Power-law exponent for nose profile: s=t^p. '
+                 'p=0.5 (default) = parabolic ogive; p=1.0 = cone.',
+        )
+        self.add_input(
+            'nose_aspect_ratio', val=2.0, units='unitless',
+            desc='Ellipsoid nose length divided by nose radius. 1.0=hemisphere; '
+                 '2.0=prolate ellipsoid; used when nose_type="ellipsoid".',
+        )
 
         self.add_output('fuselage_planform_area', val=0.24, units='m**2')
         self.add_output('fuselage_base_area', val=0.004, units='m**2')
@@ -196,6 +313,9 @@ class SuperellipseFuselageGeometry(om.ExplicitComponent):
         base_w_frac = float(inputs['base_width_fraction'].ravel()[0])
         base_h_frac = float(inputs['base_height_fraction'].ravel()[0])
         exponent = float(inputs['superellipse_exponent'].ravel()[0])
+        nose_power = float(inputs['nose_power_exponent'].ravel()[0])
+        nose_aspect_ratio = float(inputs['nose_aspect_ratio'].ravel()[0])
+        nose_type = self.options['nose_type']
 
         if length <= 0.0:
             raise ValueError(f'SuperellipseFuselageGeometry: fuselage_length must be > 0; got {length}.')
@@ -208,30 +328,53 @@ class SuperellipseFuselageGeometry(om.ExplicitComponent):
                 'SuperellipseFuselageGeometry: nose_length_fraction and '
                 f'tail_length_fraction must be >= 0; got {nose_frac}, {tail_frac}.'
             )
-        if nose_frac + tail_frac > 1.0:
+        if nose_type != 'ellipsoid' and nose_frac + tail_frac > 1.0:
             raise ValueError(
                 'SuperellipseFuselageGeometry: nose_length_fraction + '
                 f'tail_length_fraction must be <= 1; got {nose_frac + tail_frac}.'
             )
+        if nose_type == 'ellipsoid':
+            if nose_aspect_ratio < 1.0:
+                raise ValueError(
+                    'SuperellipseFuselageGeometry: nose_aspect_ratio must be >= 1 '
+                    f'for ellipsoid nose; got {nose_aspect_ratio}.'
+                )
+            ellipsoid_nose_frac = nose_aspect_ratio * max_width / (2.0 * length)
+            if ellipsoid_nose_frac + tail_frac > 1.0:
+                raise ValueError(
+                    'SuperellipseFuselageGeometry: ellipsoid nose length + tail length '
+                    f'must be <= fuselage length; got fraction {ellipsoid_nose_frac + tail_frac}.'
+                )
+            if not math.isclose(max_width, max_height, rel_tol=1.0e-9, abs_tol=1.0e-12):
+                warnings.warn(
+                    'SuperellipseFuselageGeometry: ellipsoid nose uses circular sections '
+                    'based on max_width; max_height differs, so the nose/body junction '
+                    'height will step unless the body dimensions are made equal.',
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
         if base_w_frac < 0.0 or base_h_frac < 0.0:
             raise ValueError(
                 'SuperellipseFuselageGeometry: base fractions must be >= 0; '
                 f'got {base_w_frac}, {base_h_frac}.'
             )
-        if base_w_frac > 1.0 or base_h_frac > 1.0:
-            warnings.warn(
-                'SuperellipseFuselageGeometry: base fractions above 1.0 create an '
-                'aft body wider/taller than the max body dimensions.',
-                RuntimeWarning,
-                stacklevel=2,
-            )
         if exponent < 1.0:
             raise ValueError(
                 f'SuperellipseFuselageGeometry: superellipse_exponent must be >= 1; got {exponent}.'
             )
+        if nose_power <= 0.0:
+            raise ValueError(
+                f'SuperellipseFuselageGeometry: nose_power_exponent must be > 0; got {nose_power}.'
+            )
 
         num_x = self.options['num_x']
-        x_norm = np.linspace(0.0, 1.0, num_x)
+        x_norm = _fuselage_x_distribution(
+            num_x,
+            nose_type,
+            nose_aspect_ratio,
+            max_width,
+            length,
+        )
         x = x_norm * length
         widths, heights = superellipse_width_height_distribution(
             x_norm,
@@ -241,9 +384,23 @@ class SuperellipseFuselageGeometry(om.ExplicitComponent):
             tail_frac,
             base_w_frac,
             base_h_frac,
+            nose_power_exponent=nose_power,
+            nose_type=nose_type,
+            nose_aspect_ratio=nose_aspect_ratio,
+            fuselage_length=length,
         )
-        areas = superellipse_area(widths, heights, exponent)
-        max_area = superellipse_area(max_width, max_height, exponent)
+        exponents = superellipse_exponent_distribution(
+            x_norm,
+            nose_frac,
+            tail_frac,
+            exponent,
+            nose_type=nose_type,
+            nose_aspect_ratio=nose_aspect_ratio,
+            max_width=max_width,
+            fuselage_length=length,
+        )
+        areas = superellipse_area(widths, heights, exponents)
+        max_area = float(np.max(areas))
         base_area = superellipse_area(
             max_width * base_w_frac,
             max_height * base_h_frac,
@@ -259,7 +416,7 @@ class SuperellipseFuselageGeometry(om.ExplicitComponent):
             x,
             widths,
             heights,
-            exponent,
+            exponents,
             num_theta=self.options['num_theta'],
         )
         equivalent_diameter = np.sqrt(4.0 * max_area / np.pi)

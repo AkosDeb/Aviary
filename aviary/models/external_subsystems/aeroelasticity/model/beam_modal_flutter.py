@@ -598,7 +598,7 @@ class BeamModalFlutter(om.ExplicitComponent):
         self.add_input(AE.FLUTTER_MAX_SPEED, val=350.0, units='m/s')
         self.add_input(AE.STRUCTURAL_DAMPING_RATIO, val=0.02)
         self.add_input(AE.LIFT_CURVE_SLOPE, val=2.0 * np.pi, units='unitless')
-        self.add_input(AE.AERO_CENTER_TO_EA_FRACTION, val=0.125)
+        self.add_input(AE.AERO_CENTER_TO_EA_FRACTION, val=0.125, units='unitless')
         self.add_input(AE.CONTROL_MOMENT_ALPHA_DERIVATIVE, val=-0.05, units='1/rad')
         self.add_input(AE.ELEVON_SPAN_START_FRACTION, val=0.45, units='unitless')
         self.add_input(AE.ELEVON_SPAN_END_FRACTION, val=0.95, units='unitless')

@@ -45,8 +45,22 @@ class AeroelasticityGroup(om.Group):
 
     def initialize(self):
         self.options.declare('material_name', default='aluminum_6061_t6', types=str)
+        self.options.declare(
+            'flutter_model',
+            default='beam_modal_3dof_pk',
+            values=('beam_modal_3dof_pk', 'legacy_scalar'),
+            desc=(
+                'Active flutter model family. "beam_modal_3dof_pk" builds the '
+                'spanwise beam-modal flutter component and modal matrices. '
+                '"legacy_scalar" skips that expensive component and uses the '
+                'scalar flutter screen, while the Step-3 spanwise structure, '
+                'mass, and equivalent-property path still runs.'
+            ),
+        )
 
     def setup(self):
+        flutter_model = self.options['flutter_model']
+
         self.set_input_defaults(AE.DESIGN_SPEED, val=550.0 / 3.6, units='m/s')
         self.set_input_defaults(
             AE.REQUIRED_SPEED,
@@ -192,57 +206,58 @@ class AeroelasticityGroup(om.Group):
                 AE.PITCH_INERTIA_PER_UNIT_SPAN,
             ],
         )
-        self.add_subsystem(
-            'beam_modal_flutter',
-            BeamModalFlutter(),
-            promotes_inputs=[
-                AE.SPANWISE_STATIONS,
-                AE.SPANWISE_CHORD,
-                AE.SPANWISE_BENDING_STIFFNESS,
-                AE.SPANWISE_TORSIONAL_RIGIDITY,
-                AE.SPANWISE_TOTAL_MASS_PER_UNIT_SPAN,
-                AE.SPANWISE_TOTAL_PITCH_INERTIA_PER_UNIT_SPAN,
-                AE.AIR_DENSITY,
-                AE.DESIGN_SPEED,
-                AE.REQUIRED_SPEED,
-                AE.FLUTTER_MAX_SPEED,
-                AE.STRUCTURAL_DAMPING_RATIO,
-                AE.LIFT_CURVE_SLOPE,
-                AE.AERO_CENTER_TO_EA_FRACTION,
-                AE.CONTROL_MOMENT_ALPHA_DERIVATIVE,
-                AE.ELEVON_SPAN_START_FRACTION,
-                AE.ELEVON_SPAN_END_FRACTION,
-                AE.CONTROL_INERTIA_PER_UNIT_SPAN,
-                AE.CONTROL_STATIC_UNBALANCE,
-                AE.CONTROL_STIFFNESS,
-                AE.CONTROL_LIFT_DERIVATIVE,
-                AE.CONTROL_MOMENT_DERIVATIVE,
-                AE.HINGE_MOMENT_ALPHA_DERIVATIVE,
-                AE.HINGE_MOMENT_CONTROL_DERIVATIVE,
-                AE.CONTROL_HINGE_FRACTION,
-            ],
-            promotes_outputs=[
-                AE.BEAM_MODAL_BENDING_FREQUENCY,
-                AE.BEAM_MODAL_TORSION_FREQUENCY,
-                AE.BEAM_MODAL_FLUTTER_SPEED,
-                AE.BEAM_MODAL_FLUTTER_SPEED_MARGIN,
-                AE.BEAM_MODAL_MAX_REAL_EIGENVALUE_AT_DESIGN,
-                AE.BEAM_MODAL_CRITICAL_MODE,
-                AE.BEAM_MODAL_PK_FLUTTER_SPEED,
-                AE.BEAM_MODAL_PK_FLUTTER_FREQUENCY,
-                AE.BEAM_MODAL_PK_FLUTTER_SPEED_MARGIN,
-                AE.BEAM_MODAL_PK_MODE_DAMPING,
-                AE.BEAM_MODAL_PK_MODE_FREQUENCY,
-                AE.BEAM_MODAL_PK_CONVERGED,
-                AE.BEAM_MODAL_CONTROL_FREQUENCY,
-                AE.BEAM_MODAL_3DOF_PK_FLUTTER_SPEED,
-                AE.BEAM_MODAL_3DOF_PK_FLUTTER_FREQUENCY,
-                AE.BEAM_MODAL_3DOF_PK_FLUTTER_SPEED_MARGIN,
-                AE.BEAM_MODAL_3DOF_PK_CONVERGED,
-                AE.BEAM_MODAL_3DOF_PK_MODE_DAMPING,
-                AE.BEAM_MODAL_3DOF_PK_MODE_FREQUENCY,
-            ],
-        )
+        if flutter_model == 'beam_modal_3dof_pk':
+            self.add_subsystem(
+                'beam_modal_flutter',
+                BeamModalFlutter(),
+                promotes_inputs=[
+                    AE.SPANWISE_STATIONS,
+                    AE.SPANWISE_CHORD,
+                    AE.SPANWISE_BENDING_STIFFNESS,
+                    AE.SPANWISE_TORSIONAL_RIGIDITY,
+                    AE.SPANWISE_TOTAL_MASS_PER_UNIT_SPAN,
+                    AE.SPANWISE_TOTAL_PITCH_INERTIA_PER_UNIT_SPAN,
+                    AE.AIR_DENSITY,
+                    AE.DESIGN_SPEED,
+                    AE.REQUIRED_SPEED,
+                    AE.FLUTTER_MAX_SPEED,
+                    AE.STRUCTURAL_DAMPING_RATIO,
+                    AE.LIFT_CURVE_SLOPE,
+                    AE.AERO_CENTER_TO_EA_FRACTION,
+                    AE.CONTROL_MOMENT_ALPHA_DERIVATIVE,
+                    AE.ELEVON_SPAN_START_FRACTION,
+                    AE.ELEVON_SPAN_END_FRACTION,
+                    AE.CONTROL_INERTIA_PER_UNIT_SPAN,
+                    AE.CONTROL_STATIC_UNBALANCE,
+                    AE.CONTROL_STIFFNESS,
+                    AE.CONTROL_LIFT_DERIVATIVE,
+                    AE.CONTROL_MOMENT_DERIVATIVE,
+                    AE.HINGE_MOMENT_ALPHA_DERIVATIVE,
+                    AE.HINGE_MOMENT_CONTROL_DERIVATIVE,
+                    AE.CONTROL_HINGE_FRACTION,
+                ],
+                promotes_outputs=[
+                    AE.BEAM_MODAL_BENDING_FREQUENCY,
+                    AE.BEAM_MODAL_TORSION_FREQUENCY,
+                    AE.BEAM_MODAL_FLUTTER_SPEED,
+                    AE.BEAM_MODAL_FLUTTER_SPEED_MARGIN,
+                    AE.BEAM_MODAL_MAX_REAL_EIGENVALUE_AT_DESIGN,
+                    AE.BEAM_MODAL_CRITICAL_MODE,
+                    AE.BEAM_MODAL_PK_FLUTTER_SPEED,
+                    AE.BEAM_MODAL_PK_FLUTTER_FREQUENCY,
+                    AE.BEAM_MODAL_PK_FLUTTER_SPEED_MARGIN,
+                    AE.BEAM_MODAL_PK_MODE_DAMPING,
+                    AE.BEAM_MODAL_PK_MODE_FREQUENCY,
+                    AE.BEAM_MODAL_PK_CONVERGED,
+                    AE.BEAM_MODAL_CONTROL_FREQUENCY,
+                    AE.BEAM_MODAL_3DOF_PK_FLUTTER_SPEED,
+                    AE.BEAM_MODAL_3DOF_PK_FLUTTER_FREQUENCY,
+                    AE.BEAM_MODAL_3DOF_PK_FLUTTER_SPEED_MARGIN,
+                    AE.BEAM_MODAL_3DOF_PK_CONVERGED,
+                    AE.BEAM_MODAL_3DOF_PK_MODE_DAMPING,
+                    AE.BEAM_MODAL_3DOF_PK_MODE_FREQUENCY,
+                ],
+            )
         self.add_subsystem(
             'flutter',
             QuasiSteadyFlutterScreen(),
@@ -280,12 +295,22 @@ class AeroelasticityBuilder(SubsystemBuilder):
 
     _default_name = 'aeroelasticity'
 
-    def __init__(self, name=None, meta_data=None, material_name='aluminum_6061_t6'):
+    def __init__(
+        self,
+        name=None,
+        meta_data=None,
+        material_name='aluminum_6061_t6',
+        flutter_model='beam_modal_3dof_pk',
+    ):
         self.material_name = material_name
+        self.flutter_model = flutter_model
         super().__init__(name, meta_data)
 
     def build_pre_mission(self, aviary_inputs, subsystem_options=None):
         material_name = self.material_name
+        flutter_model = self.flutter_model
         if subsystem_options and 'material_name' in subsystem_options:
             material_name = subsystem_options['material_name']
-        return AeroelasticityGroup(material_name=material_name)
+        if subsystem_options and 'flutter_model' in subsystem_options:
+            flutter_model = subsystem_options['flutter_model']
+        return AeroelasticityGroup(material_name=material_name, flutter_model=flutter_model)

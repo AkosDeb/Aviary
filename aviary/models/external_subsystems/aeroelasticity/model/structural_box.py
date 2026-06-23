@@ -31,9 +31,9 @@ class WingboxStructuralEstimate(om.ExplicitComponent):
         self.add_input(AE.MATERIAL_DENSITY, val=2700.0, units='kg/m**3')
         self.add_input(AE.CONTROL_CG_FROM_HINGE_FRACTION, val=0.5, units='unitless')
 
-        self.add_output(AE.ELASTIC_AXIS_FRACTION, val=0.375)
-        self.add_output(AE.AERO_CENTER_TO_EA_FRACTION, val=0.125)
-        self.add_output(AE.CONTROL_HINGE_FRACTION, val=0.75)
+        self.add_output(AE.ELASTIC_AXIS_FRACTION, val=0.375, units='unitless')
+        self.add_output(AE.AERO_CENTER_TO_EA_FRACTION, val=0.125, units='unitless')
+        self.add_output(AE.CONTROL_HINGE_FRACTION, val=0.75, units='unitless')
         self.add_output(AE.WINGBOX_WIDTH, val=0.2, units='m')
         self.add_output(AE.WINGBOX_HEIGHT, val=0.05, units='m')
         self.add_output(AE.WINGBOX_AREA, val=0.01, units='m**2')

@@ -7,8 +7,10 @@ from pathlib import Path
 import numpy as np
 
 import aviary.api as av
+from aviary.models.external_subsystems.aeroelasticity.variables import Aeroelasticity as AE
 from aviary.subsystems.geometry.flops_based.superellipse_fuselage import (
     superellipse_width_height_distribution,
+    superellipse_exponent_distribution,
     _superellipse_surface_points,
 )
 from aviary.subsystems.propulsion.small_turbojet import SmallTurbojetVariables
@@ -116,6 +118,9 @@ def write_spajeti_aircraft_3d_report(prob):
         0.12,
     )
     engine_length = 0.35 * engine_diameter
+    aft_base_diameter = engine_diameter + FUSELAGE_AFT_ENGINE_CLEARANCE_M
+    fus_base_width_frac = aft_base_diameter / fus_w
+    fus_base_height_frac = aft_base_diameter / fus_h
 
     def p(x_aft, y_right, z_down):
         # A-Frame: x = aircraft aft/forward, y = up, z = right.
@@ -138,16 +143,30 @@ def write_spajeti_aircraft_3d_report(prob):
             fus_h,
             FUSELAGE_NOSE_LENGTH_FRACTION,
             FUSELAGE_TAIL_LENGTH_FRACTION,
-            FUSELAGE_BASE_WIDTH_FRACTION,
-            FUSELAGE_BASE_HEIGHT_FRACTION,
+            fus_base_width_frac,
+            fus_base_height_frac,
+            nose_power_exponent=FUSELAGE_NOSE_POWER_EXPONENT,
+            nose_type=FUSELAGE_NOSE_TYPE,
+            nose_aspect_ratio=FUSELAGE_NOSE_ASPECT_RATIO,
+            fuselage_length=fus_len,
+        )
+        exponents = superellipse_exponent_distribution(
+            x_norm,
+            FUSELAGE_NOSE_LENGTH_FRACTION,
+            FUSELAGE_TAIL_LENGTH_FRACTION,
+            FUSELAGE_SUPERELLIPSE_EXPONENT,
+            nose_type=FUSELAGE_NOSE_TYPE,
+            nose_aspect_ratio=FUSELAGE_NOSE_ASPECT_RATIO,
+            max_width=fus_w,
+            fuselage_length=fus_len,
         )
         theta = np.linspace(0.0, 2.0 * np.pi, n_t, endpoint=False)
         rings = []
-        for x_frac, width, height in zip(x_norm, widths, heights):
+        for x_frac, width, height, exponent in zip(x_norm, widths, heights, exponents):
             y_vals, z_vals = _superellipse_surface_points(
                 width,
                 height,
-                FUSELAGE_SUPERELLIPSE_EXPONENT,
+                exponent,
                 theta,
             )
             rings.append([p(x_frac * fus_len, y, z_down) for y, z_down in zip(y_vals, z_vals)])
@@ -279,4 +298,218 @@ def write_spajeti_aircraft_3d_report(prob):
     return html_path
 
 
+def write_optimization_summary_html(prob, engine_mass_upper_kg, model_version):
+    """Write a self-contained HTML optimization summary to reports/subsystems/.
+
+    Shows physical (unscaled) values from prob.get_val() so the dashboard tab
+    is unambiguous — unlike opt_report.html which displays val/ref (scaled).
+    """
+    _require_context()
+    reports_dir = Path(prob.get_reports_dir(force=True))
+    html_path = reports_dir / 'spajeti_summary.html'
+    subsystems_dir = reports_dir / 'subsystems'
+    subsystems_dir.mkdir(parents=True, exist_ok=True)
+    md_path = subsystems_dir / 'spajeti_summary.md'
+
+    def _v(name, unit=None):
+        val = safe_get(prob, name) if unit is None else safe_get(prob, name, unit)
+        if isinstance(val, str):
+            return None
+        return float(np.atleast_1d(val)[0])
+
+    # ── collect values ────────────────────────────────────────────────────────
+    range_km   = _v(av.Mission.RANGE, 'km')
+    fuel_kg    = _v(av.Mission.TOTAL_FUEL, 'kg')
+    span       = _v(av.Aircraft.Wing.SPAN, 'm')
+    area       = _v(av.Aircraft.Wing.AREA, 'm**2')
+    tc         = _v('wing_section_tc')
+    vtp_span   = _v(av.Aircraft.VerticalTail.SPAN, 'm')
+    sls        = _v(av.Aircraft.Engine.SCALED_SLS_THRUST, 'N')
+    eng_mass   = _v(f'pre_mission.propulsion.{SmallTurbojetVariables.MASS}', 'kg')
+    eng_diam   = _v(f'pre_mission.propulsion.{SmallTurbojetVariables.DIAMETER}', 'm')
+    eng_sfc    = _v(f'pre_mission.propulsion.{SmallTurbojetVariables.SFC}', 'kg/(N*s)')
+    fuel_mgn   = _v('horizontal_small_uav:available_fuel', 'kg')
+    ny         = _v('Ny')
+    nz         = _v('Nz')
+    mcrit_mgn  = _v('mach_crit_margin')
+    div_mgn    = _v(AE.DIVERGENCE_SPEED_MARGIN, 'm/s')
+    div_spd    = _v(AE.DIVERGENCE_SPEED, 'm/s')
+    lam_max    = _v(AE.MAX_REAL_EIGENVALUE_AT_DESIGN, '1/s')
+    ar_eff     = _v('AR_eff')
+    e_oswald   = _v('e_oswald')
+    e_span     = _v(av.Aircraft.Wing.SPAN_EFFICIENCY_FACTOR)
+    mtow_kg    = float(np.atleast_1d(prob.aviary_inputs.get_val(av.Aircraft.Design.GROSS_MASS, 'kg'))[0])
+    sls_min    = TW_MIN * mtow_kg * 9.80665
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+    def _fmt(v, decimals=3):
+        return f'{v:.{decimals}f}' if v is not None else 'n/a'
+
+    def _row(label, val, unit, lo=None, hi=None, sense='>=', is_dv=False):
+        """Return an HTML <tr> with colour-coded status."""
+        if val is None:
+            return (f'<tr><td>{label}</td><td colspan="4" class="na">n/a</td></tr>')
+        at_lo = lo is not None and abs(val - lo) < 1e-3 * max(abs(lo), 1.0)
+        at_hi = hi is not None and abs(val - hi) < 1e-3 * max(abs(hi), 1.0)
+        if lo is not None and hi is not None:
+            ok = lo <= val <= hi
+        elif lo is not None:
+            ok = (val >= lo) if sense == '>=' else (val <= lo)
+        else:
+            ok = True
+        if not ok:
+            cls = 'bad'
+            status = '✗ VIOLATION'
+        elif at_hi and is_dv:
+            cls = 'warn'
+            status = '▲ AT UPPER BOUND'
+        elif at_lo and is_dv:
+            cls = 'warn'
+            status = '▼ AT LOWER BOUND'
+        else:
+            cls = 'ok'
+            status = '✓'
+        bounds = ''
+        if lo is not None and hi is not None:
+            bounds = f'[{lo}, {hi}]'
+        elif lo is not None:
+            bounds = f'{sense} {lo}'
+        return (
+            f'<tr class="{cls}">'
+            f'<td>{label}</td>'
+            f'<td class="num">{_fmt(val)}</td>'
+            f'<td>{unit}</td>'
+            f'<td class="bounds">{bounds}</td>'
+            f'<td class="status">{status}</td>'
+            f'</tr>'
+        )
+
+    def _section(title):
+        return f'<tr class="section-header"><td colspan="5">{title}</td></tr>'
+
+    # ── flutter row ───────────────────────────────────────────────────────────
+    if AEROELASTIC_FLUTTER_MODEL == 'legacy_scalar':
+        flutter_row = _row('Flutter  λ_max at design', lam_max, '1/s', lo=0.0, sense='<=')
+    elif AEROELASTIC_FLUTTER_MODEL == 'beam_modal_3dof_pk':
+        pk_mgn = _v(AE.BEAM_MODAL_3DOF_PK_FLUTTER_SPEED_MARGIN, 'm/s')
+        flutter_row = _row('Flutter  3DOF-PK margin', pk_mgn, 'm/s', lo=0.0)
+    else:
+        flutter_row = '<tr class="ok"><td>Flutter</td><td colspan="4">unconstrained (model = "none")</td></tr>'
+
+    sfc_str = f'{eng_sfc:.3e}' if eng_sfc is not None else 'n/a'
+    ar_str  = _fmt(ar_eff)
+    e_str   = _fmt(e_oswald)
+    es_str  = _fmt(e_span)
+
+    rows = '\n'.join([
+        _section('Objective'),
+        _row('Range',           range_km, 'km',  lo=0.0),
+        _row('Total fuel burn', fuel_kg,  'kg',  lo=0.0),
+
+        _section('Load constraints'),
+        _row('Ny  (lateral load factor)',      ny,       '',    lo=NY_MIN),
+        _row('Nz  (longitudinal load factor)', nz,       '',    lo=NZ_MIN),
+        _row('M_crit margin',                  mcrit_mgn,'',    lo=0.0),
+        _row('Divergence speed margin',        div_mgn,  'm/s', lo=0.0),
+        _row('Divergence speed',               div_spd,  'm/s', lo=0.0),
+        flutter_row,
+
+        _section('Engine'),
+        _row('SLS thrust',        sls,      'N',  lo=sls_min),
+        _row('Engine mass',       eng_mass, 'kg', lo=0.0, hi=engine_mass_upper_kg, sense='<='),
+        _row('Engine diameter',   eng_diam, 'm',  lo=0.0),
+        f'<tr><td>SFC</td><td class="num">{sfc_str}</td><td>kg/(N·s)</td><td></td><td></td></tr>',
+
+        _section('Design variables  (▲/▼ = at bound)'),
+        _row('Wing span',   span,    'm',    lo=1.34, hi=2.0,  is_dv=True),
+        _row('Wing area',   area,    'm²',   lo=0.40, hi=0.75, is_dv=True),
+        _row('Wing t/c',    tc,      '',     lo=0.05, hi=0.18, is_dv=True),
+        _row('VTP span',    vtp_span,'m',    lo=0.15, hi=0.60, is_dv=True),
+        _row('SLS thrust',  sls,     'N',    lo=sls_min, is_dv=True),
+
+        _section('Aerodynamics (informational)'),
+        f'<tr><td>AR_eff (Scholz endplate)</td><td class="num">{ar_str}</td><td></td><td></td><td></td></tr>',
+        f'<tr><td>e_oswald (Roskam Eq 4.12)</td><td class="num">{e_str}</td><td></td><td></td><td></td></tr>',
+        f'<tr><td>e_span_eff (→ FLOPS polar)</td><td class="num">{es_str}</td><td></td><td></td><td></td></tr>',
+    ])
+
+    flutter_label = {
+        'legacy_scalar': 'legacy scalar λ_max',
+        'beam_modal_3dof_pk': 'beam-modal 3DOF P-K',
+        'none': 'unconstrained',
+    }.get(AEROELASTIC_FLUTTER_MODEL, AEROELASTIC_FLUTTER_MODEL)
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SpaJeti Optimization Summary v{model_version}</title>
+<style>
+  body {{
+    font-family: system-ui, sans-serif; font-size: 14px;
+    margin: 0; padding: 20px 28px; background: #f8fafc; color: #1e293b;
+  }}
+  h1 {{ font-size: 18px; margin: 0 0 4px; color: #0f172a; }}
+  .meta {{ font-size: 12px; color: #64748b; margin-bottom: 18px; }}
+  table {{ border-collapse: collapse; width: 100%; max-width: 820px; }}
+  th, td {{ padding: 5px 10px; text-align: left; border-bottom: 1px solid #e2e8f0; }}
+  th {{ background: #1e40af; color: #fff; font-weight: 600; font-size: 13px; }}
+  tr.section-header td {{
+    background: #1e293b; color: #94a3b8; font-size: 11px; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase; padding: 6px 10px;
+    border: none;
+  }}
+  tr.ok  td {{ background: #f0fdf4; }}
+  tr.warn td {{ background: #fefce8; }}
+  tr.bad  td {{ background: #fef2f2; }}
+  .na {{ color: #94a3b8; font-style: italic; }}
+  .num {{ font-family: monospace; font-size: 13px; }}
+  .bounds {{ font-size: 12px; color: #64748b; }}
+  .status {{ font-weight: 600; }}
+  tr.ok  .status {{ color: #15803d; }}
+  tr.warn .status {{ color: #b45309; }}
+  tr.bad  .status {{ color: #b91c1c; }}
+  .note {{
+    margin-top: 14px; padding: 10px 14px; background: #eff6ff;
+    border-left: 4px solid #3b82f6; border-radius: 3px;
+    font-size: 12px; color: #1e40af; max-width: 820px;
+  }}
+</style>
+</head>
+<body>
+<h1>SpaJeti H-wing — Optimization Summary</h1>
+<div class="meta">
+  Model v{model_version} &nbsp;·&nbsp;
+  Flutter model: {flutter_label} &nbsp;·&nbsp;
+  All values: <strong>prob.get_val() — actual physical (unscaled)</strong>
+</div>
+<table>
+  <thead>
+    <tr>
+      <th>Quantity</th><th>Value</th><th>Unit</th><th>Bound</th><th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+{rows}
+  </tbody>
+</table>
+<div class="note">
+  <strong>Note:</strong> opt_report.html and the OpenMDAO driver table show
+  <em>val / ref</em> (scaled) against unscaled physical bounds — a value can
+  appear out-of-range there even when satisfied. This table uses
+  <code>prob.get_val()</code> and is authoritative.
+</div>
+</body>
+</html>
+"""
+    html_path.write_text(html, encoding='utf-8')
+    md_path.write_text(
+        '# SpaJeti Optimization Summary\n\n'
+        'Physical (unscaled) values — authoritative source for all constraint and DV status.\n\n'
+        '[Open Optimization Summary](../spajeti_summary.html)\n\n'
+        '> **Tip:** opt_report.html shows *val/ref* (scaled) values. '
+        'This report uses `prob.get_val()` directly.\n',
+        encoding='utf-8',
+    )
+    return html_path
 

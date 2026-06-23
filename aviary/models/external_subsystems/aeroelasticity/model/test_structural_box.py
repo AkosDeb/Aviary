@@ -22,9 +22,13 @@ class TestWingboxStructuralEstimate(unittest.TestCase):
         prob.set_val(f'box.{AE.STRUCTURAL_THICKNESS_TO_CHORD}', 0.12)
         prob.run_model()
 
+        assert_near_equal(prob.get_val(f'box.{AE.FRONT_SPAR_FRACTION}'), 0.15)
+        assert_near_equal(prob.get_val(f'box.{AE.REAR_SPAR_FRACTION}'), 0.60)
         assert_near_equal(prob.get_val(f'box.{AE.ELASTIC_AXIS_FRACTION}'), 0.375)
         assert_near_equal(prob.get_val(f'box.{AE.CONTROL_HINGE_FRACTION}'), 0.75)
         assert_near_equal(prob.get_val(f'box.{AE.AERO_CENTER_TO_EA_FRACTION}'), 0.125)
+        self.assertGreater(prob.get_val(f'box.{AE.ELASTIC_AXIS_FRACTION}'), 0.15)
+        self.assertLess(prob.get_val(f'box.{AE.ELASTIC_AXIS_FRACTION}'), 0.60)
 
         self.assertGreater(prob.get_val(f'box.{AE.BENDING_STIFFNESS}', units='N*m**2'), 0.0)
         self.assertGreater(prob.get_val(f'box.{AE.TORSIONAL_RIGIDITY}', units='N*m**2'), 0.0)

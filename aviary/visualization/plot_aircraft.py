@@ -113,6 +113,10 @@ def _fuselage_mesh(
     nose_frac=0.20, tail_frac=0.35,
     base_w_frac=0.20, base_h_frac=0.20,
     exponent=4.0,
+    nose_power_exponent=0.5,
+    nose_type='power_law',
+    nose_aspect_ratio=2.0,
+    exponent_blend_frac=0.10,
     n_x=32, n_t=40,
 ):
     """
@@ -122,12 +126,37 @@ def _fuselage_mesh(
     so the visualizer shows the same body that feeds parasite drag and CDi_fus.
     """
     from aviary.subsystems.geometry.flops_based.superellipse_fuselage import (
+        _fuselage_x_distribution,
         superellipse_width_height_distribution,
+        superellipse_exponent_distribution,
         _superellipse_surface_points,
     )
-    x_norm = np.linspace(0.0, 1.0, n_x)
+    x_norm = _fuselage_x_distribution(
+        n_x,
+        nose_type,
+        nose_aspect_ratio,
+        width,
+        length,
+        blend_fraction=exponent_blend_frac,
+    )
+    n_x = len(x_norm)
     widths, heights = superellipse_width_height_distribution(
-        x_norm, width, height, nose_frac, tail_frac, base_w_frac, base_h_frac
+        x_norm, width, height, nose_frac, tail_frac, base_w_frac, base_h_frac,
+        nose_power_exponent=nose_power_exponent,
+        nose_type=nose_type,
+        nose_aspect_ratio=nose_aspect_ratio,
+        fuselage_length=length,
+    )
+    exponents = superellipse_exponent_distribution(
+        x_norm,
+        nose_frac,
+        tail_frac,
+        exponent,
+        nose_type=nose_type,
+        nose_aspect_ratio=nose_aspect_ratio,
+        max_width=width,
+        fuselage_length=length,
+        blend_fraction=exponent_blend_frac,
     )
     theta = np.linspace(0.0, 2.0 * np.pi, n_t, endpoint=False)
 
@@ -136,9 +165,38 @@ def _fuselage_mesh(
     Z = np.zeros((n_x, n_t))
     for i in range(n_x):
         X[i, :] = x_norm[i] * length
-        Y[i, :], Z[i, :] = _superellipse_surface_points(widths[i], heights[i], exponent, theta)
+        Y[i, :], Z[i, :] = _superellipse_surface_points(
+            widths[i], heights[i], exponents[i], theta
+        )
 
     return X, Y, Z
+
+
+def _resolve_aft_base_fractions(
+    base_w_frac,
+    base_h_frac,
+    aft_base_diameter,
+    aft_engine_clearance,
+    engine_diameter,
+    fuselage_width,
+    fuselage_height,
+):
+    """Return aft base fractions, optionally derived from engine/nozzle diameter."""
+    if aft_base_diameter is None and aft_engine_clearance is not None:
+        if engine_diameter is None:
+            raise ValueError(
+                '--aft-engine-clearance requires an engine/nacelle diameter in the CSV '
+                'or an explicit --aft-base-diameter.'
+            )
+        aft_base_diameter = engine_diameter + aft_engine_clearance
+
+    if aft_base_diameter is None:
+        return base_w_frac, base_h_frac
+
+    if fuselage_width <= 0.0 or fuselage_height <= 0.0:
+        raise ValueError('Fuselage width and height must be positive to derive aft base fractions.')
+
+    return aft_base_diameter / fuselage_width, aft_base_diameter / fuselage_height
 
 
 def _nacelle_mesh(x_fwd, x_aft, y_center, z_center, radius, n_t=20):
@@ -161,6 +219,12 @@ def visualize(
     base_w_frac: float = 0.20,
     base_h_frac: float = 0.20,
     exponent: float = 4.0,
+    nose_power_exponent: float = 0.5,
+    nose_type: str = 'power_law',
+    nose_aspect_ratio: float = 2.0,
+    exponent_blend_frac: float = 0.10,
+    aft_base_diameter: float | None = None,
+    aft_engine_clearance: float | None = None,
 ) -> None:
     """
     Read an Aviary CSV aircraft config and display a 3-D matplotlib figure.
@@ -181,7 +245,24 @@ def visualize(
     exponent : float
         Superellipse cross-section exponent (default 4.0).
         2 = ellipse, 4 = rounded-rectangle.
+    nose_type : {'power_law', 'ellipsoid'}
+        Nose profile model. ``ellipsoid`` uses circular nose sections and an
+        ellipsoidal radial profile.
+    nose_aspect_ratio : float
+        Ellipsoid nose length divided by radius. Used only for ``ellipsoid``.
+    exponent_blend_frac : float
+        Fraction of fuselage length used to blend ellipsoid nose sections
+        from circular (n=2) to the body superellipse exponent.
+    aft_base_diameter : float, optional
+        Absolute aft base diameter in metres. When supplied, overrides
+        ``base_w_frac`` and ``base_h_frac``.
+    aft_engine_clearance : float, optional
+        Clearance added to the CSV engine/nacelle diameter to derive the aft
+        base diameter.
     """
+    if nose_type not in ('power_law', 'ellipsoid'):
+        raise ValueError("nose_type must be 'power_law' or 'ellipsoid'.")
+
     csv_path = Path(csv_path)
     aviary_vals = AviaryValues()
     parse_inputs(csv_path, aircraft_values=aviary_vals)
@@ -249,6 +330,16 @@ def visualize(
     n_fus_eng   = int(_get(aviary_vals, 'aircraft:engine:num_fuselage_engines', None, 0) or 0)
     n_wing_eng  = int(_get(aviary_vals, 'aircraft:engine:num_wing_engines',    None, 0) or 0)
 
+    base_w_frac, base_h_frac = _resolve_aft_base_fractions(
+        base_w_frac,
+        base_h_frac,
+        aft_base_diameter,
+        aft_engine_clearance,
+        eng_d,
+        fus_w,
+        fus_h,
+    )
+
     if eng_locs is None and n_wing_eng > 0:
         eng_locs = np.array([0.35])     # sensible default: one engine at 35% semi-span
 
@@ -262,7 +353,11 @@ def visualize(
     Xf, Yf, Zf = _fuselage_mesh(fus_len, fus_w, fus_h,
                                  nose_frac=nose_frac, tail_frac=tail_frac,
                                  base_w_frac=base_w_frac, base_h_frac=base_h_frac,
-                                 exponent=exponent)
+                                 exponent=exponent,
+                                 nose_power_exponent=nose_power_exponent,
+                                 nose_type=nose_type,
+                                 nose_aspect_ratio=nose_aspect_ratio,
+                                 exponent_blend_frac=exponent_blend_frac)
     ax.plot_surface(Xf, Yf, Zf, color=_C_FUSE, alpha=_ALPHA, linewidth=0, zorder=1)
 
     # main wing
@@ -345,6 +440,18 @@ def main():
                         help='Aft-end height / max_height (default 0.20)')
     parser.add_argument('--exponent',    type=float, default=4.0,  metavar='N',
                         help='Superellipse cross-section exponent (default 4.0)')
+    parser.add_argument('--nose-power-exponent', type=float, default=0.5, metavar='P',
+                        help='Power-law nose exponent for nose_type=power_law (default 0.5)')
+    parser.add_argument('--nose-type', choices=('power_law', 'ellipsoid'), default='power_law',
+                        help='Fuselage nose profile model (default power_law)')
+    parser.add_argument('--nose-aspect-ratio', type=float, default=2.0, metavar='A',
+                        help='Ellipsoid nose length / radius for nose_type=ellipsoid (default 2.0)')
+    parser.add_argument('--exponent-blend-frac', type=float, default=0.10, metavar='F',
+                        help='Ellipsoid nose n=2 to body exponent blend length fraction (default 0.10)')
+    parser.add_argument('--aft-base-diameter', type=float, default=None, metavar='M',
+                        help='Absolute aft base diameter in metres; overrides base fractions')
+    parser.add_argument('--aft-engine-clearance', type=float, default=None, metavar='M',
+                        help='Clearance added to CSV nacelle diameter to derive aft base diameter')
     args = parser.parse_args()
     visualize(
         args.csv,
@@ -353,6 +460,12 @@ def main():
         base_w_frac=args.base_w_frac,
         base_h_frac=args.base_h_frac,
         exponent=args.exponent,
+        nose_power_exponent=args.nose_power_exponent,
+        nose_type=args.nose_type,
+        nose_aspect_ratio=args.nose_aspect_ratio,
+        exponent_blend_frac=args.exponent_blend_frac,
+        aft_base_diameter=args.aft_base_diameter,
+        aft_engine_clearance=args.aft_engine_clearance,
     )
 
 
