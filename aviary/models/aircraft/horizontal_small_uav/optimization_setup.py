@@ -1,6 +1,7 @@
 """Optimization driver, design-variable, and constraint setup for SpaJeti."""
 
 import os
+from pathlib import Path
 
 import aviary.api as av
 
@@ -114,5 +115,61 @@ def configure_optimization(prob, optimizer, engine_mass_upper_kg):
         )
 
     prob.add_objective()
+    _setup_coloring(prob, optimizer)
+
+
+def _coloring_path():
+    """Return the coloring cache path — sibling to OUTPUT_DIR so it survives directory wipes."""
+    return OUTPUT_ROOT / f'{VERSIONED_RUN_NAME}_coloring.pkl'
+
+
+def _setup_coloring(prob, optimizer):
+    """Load a cached total Jacobian coloring or declare dynamic coloring for first run.
+
+    The coloring file lives at OUTPUT_ROOT/<run_name>_coloring.pkl, outside OUTPUT_DIR,
+    so it is not deleted when the output directory is wiped at the start of each run.
+    Without caching, OpenMDAO recomputes the sparsity structure on every run — this
+    was the source of the 600 s startup overhead observed in v1.33 with BeamModalFlutter.
+    """
+    if not USE_COLORING_CACHE or optimizer != 'IPOPT':
+        return
+    coloring_file = _coloring_path()
+    if coloring_file.exists():
+        try:
+            prob.driver.use_fixed_coloring(str(coloring_file))
+            print(f'[Coloring] Loaded cached total Jacobian coloring:\n  {coloring_file}')
+            return
+        except Exception as exc:
+            print(f'[Coloring] Could not load cached coloring ({exc}); will recompute.')
+    try:
+        prob.driver.declare_coloring(show_summary=True, show_sparsity=False)
+        print(f'[Coloring] Dynamic coloring declared — will be saved after first run to:\n'
+              f'  {coloring_file}')
+    except Exception as exc:
+        print(f'[Coloring] declare_coloring() failed ({exc}); running without coloring cache.')
+
+
+def save_coloring_cache(prob):
+    """Save the computed total Jacobian coloring to disk for reuse on the next run.
+
+    Call this after run_aviary_problem() returns.  If the cache file already exists
+    (fixed coloring was used) or saving fails, this is a no-op.
+    """
+    if not USE_COLORING_CACHE or OPTIMIZER != 'IPOPT':
+        return
+    coloring_file = _coloring_path()
+    if coloring_file.exists():
+        return  # already saved from a previous run
+    try:
+        col = prob.driver.coloring_info.coloring
+        if col is not None:
+            OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+            col.save(str(coloring_file))
+            print(f'[Coloring] Saved total Jacobian coloring to:\n  {coloring_file}')
+        else:
+            print('[Coloring] No coloring computed (coloring_info.coloring is None); '
+                  'nothing to save.')
+    except Exception as exc:
+        print(f'[Coloring] Could not save coloring: {exc}')
 
 

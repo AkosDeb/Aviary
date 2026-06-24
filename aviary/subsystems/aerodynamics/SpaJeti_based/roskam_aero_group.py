@@ -90,7 +90,7 @@ class _FuselageMissionLiftDrag(om.ExplicitComponent):
     def setup(self):
         nn = self.options['num_nodes']
         self.add_input('cl', val=np.ones(nn) * 0.5, units='unitless')
-        self.add_input('wing_CL_alpha', val=5.0, units='unitless')
+        self.add_input('CL_alpha_total', val=5.0, units='unitless')
         self.add_input(Dynamic.Atmosphere.MACH, val=np.ones(nn) * 0.3, units='unitless')
         self.add_input('fuselage_base_area', val=0.001, units='m**2')
         self.add_input('fuselage_planform_area', val=0.25, units='m**2')
@@ -102,7 +102,7 @@ class _FuselageMissionLiftDrag(om.ExplicitComponent):
 
     def compute(self, inputs, outputs):
         cl = inputs['cl']
-        cl_alpha = float(inputs['wing_CL_alpha'].ravel()[0])
+        cl_alpha = float(inputs['CL_alpha_total'].ravel()[0])
         mach = inputs[Dynamic.Atmosphere.MACH]
         s_b = float(inputs['fuselage_base_area'].ravel()[0])
         s_plf = float(inputs['fuselage_planform_area'].ravel()[0])
@@ -110,7 +110,7 @@ class _FuselageMissionLiftDrag(om.ExplicitComponent):
         fin_ratio = float(inputs['fuselage_fineness_ratio'].ravel()[0])
 
         if cl_alpha <= 0.0:
-            raise ValueError(f'_FuselageMissionLiftDrag: wing_CL_alpha must be > 0; got {cl_alpha}.')
+            raise ValueError(f'_FuselageMissionLiftDrag: CL_alpha_total must be > 0; got {cl_alpha}.')
         if s_b < 0.0 or s_plf < 0.0:
             raise ValueError('_FuselageMissionLiftDrag: fuselage areas must be non-negative.')
         if s_ref <= 0.0:
@@ -131,9 +131,11 @@ class _GeomArrayAssembler(om.ExplicitComponent):
 
     Component order: 0 = wing, 1 = VTP, 2 = fuselage.
 
-    Wing and VTP characteristic lengths are computed as area/span (average
-    chord).  Fuselage fineness ratio is consumed from the canonical fuselage
-    geometry so parasite form factor and lift-drag use the same body definition.
+    Wing characteristic length is the trapezoidal mean aerodynamic chord from
+    ``MACGeometryComp``. Tail wetted area and characteristic length come from
+    the formal ``tail_drag_*`` contract exposed by ``TailGeometryGroup``.
+    Fuselage fineness ratio is consumed from the canonical fuselage geometry so
+    parasite form factor and lift-drag use the same body definition.
     """
 
     def setup(self):
@@ -141,17 +143,19 @@ class _GeomArrayAssembler(om.ExplicitComponent):
         self.add_input(Aircraft.Wing.WETTED_AREA, val=0.8, units='m**2')
         self.add_input(Aircraft.Wing.AREA, val=0.5, units='m**2')
         self.add_input(Aircraft.Wing.SPAN, val=2.0, units='m')
+        self.add_input('wing_c_mac', val=0.25, units='m')
         self.add_input(Aircraft.Wing.THICKNESS_TO_CHORD, val=0.15, units='unitless')
         self.add_input(Aircraft.Wing.SWEEP, val=0.0, units='deg')
 
         # ── VTP ───────────────────────────────────────────────────────────────
-        # Use custom 'vtp_wetted_area' and 'vtp_area' (from HTailGeometry via
-        # trajectory parameter) instead of the FLOPS static IndepVarComp values
-        # aircraft:vertical_tail:wetted_area / area, which do not respond to the
-        # VTP span design variable.
-        self.add_input('vtp_wetted_area', val=0.32, units='m**2')
-        self.add_input('vtp_area', val=0.05, units='m**2')
-        self.add_input(Aircraft.VerticalTail.SPAN, val=0.31, units='m')
+        # Formal tail_drag_* contract from TailGeometryGroup.  The characteristic
+        # length is the physical panel MAC, correct for friction drag Reynolds
+        # number regardless of cant angle.
+        self.add_input('tail_drag_wetted_area', val=0.32, units='m**2')
+        self.add_input('tail_drag_characteristic_length', val=0.20, units='m',
+                       desc='Physical panel MAC for Reynolds-number-based tail drag')
+        self.add_input('tail_drag_interference_factor', val=1.04, units='unitless',
+                       desc='Tail layout/junction interference factor for parasite drag')
         self.add_input(Aircraft.VerticalTail.THICKNESS_TO_CHORD, val=0.12, units='unitless')
         self.add_input(Aircraft.VerticalTail.SWEEP, val=0.0, units='deg')
 
@@ -179,18 +183,18 @@ class _GeomArrayAssembler(om.ExplicitComponent):
         def _f(x):
             return float(x.flat[0])
 
-        wing_chord = _f(inputs[Aircraft.Wing.AREA]) / max(_f(inputs[Aircraft.Wing.SPAN]), 1e-6)
-        vtp_chord = _f(inputs['vtp_area']) / max(_f(inputs[Aircraft.VerticalTail.SPAN]), 1e-6)
+        wing_chord = _f(inputs['wing_c_mac'])
+        tail_chord = _f(inputs['tail_drag_characteristic_length'])
         fus_f = _f(inputs['fuselage_fineness_ratio'])
 
         outputs['wetted_area_arr'] = np.array([
             _f(inputs[Aircraft.Wing.WETTED_AREA]),
-            _f(inputs['vtp_wetted_area']),
+            _f(inputs['tail_drag_wetted_area']),
             _f(inputs['fuselage_exposed_wetted_area']),
         ])
         outputs['char_length_arr'] = np.array([
             wing_chord,
-            vtp_chord,
+            tail_chord,
             _f(inputs[Aircraft.Fuselage.LENGTH]),
         ])
         outputs['tc_arr'] = np.array([
@@ -230,17 +234,9 @@ class RoskamMissionAeroGroup(om.Group):
 
     def initialize(self):
         self.options.declare('num_nodes', default=1, types=int)
-        self.options.declare(
-            'h_wing_interference_factor',
-            default=1.0,
-            desc='R_h: H-wing junction interference factor applied to all '
-                 'lifting_surface and vtp components. Set to 1.04 for the '
-                 'SpaJeti H-tail layout.',
-        )
 
     def setup(self):
         nn = self.options['num_nodes']
-        r_h = self.options['h_wing_interference_factor']
 
         # ── 1. Dynamic pressure ───────────────────────────────────────────────
         self.add_subsystem(
@@ -271,8 +267,10 @@ class RoskamMissionAeroGroup(om.Group):
             _GeomArrayAssembler(),
             promotes_inputs=[
                 'aircraft:*',
-                'vtp_area',
-                'vtp_wetted_area',
+                'wing_c_mac',
+                'tail_drag_wetted_area',
+                'tail_drag_characteristic_length',
+                'tail_drag_interference_factor',
                 'fuselage_exposed_wetted_area',
                 'fuselage_fineness_ratio',
             ],
@@ -305,14 +303,13 @@ class RoskamMissionAeroGroup(om.Group):
                 ('sweep_at_max_thickness', 'sweep_arr'),
                 ('fineness_ratio', 'fineness_arr'),
                 ('fuselage_length', Aircraft.Fuselage.LENGTH),
+                ('tail_interference_factor', 'tail_drag_interference_factor'),
                 # fixed geometry: promote with unique names so group defaults apply
-                ('h_wing_interference_factor', 'roskam_h_wing_intf'),
                 ('max_thickness_location_over_chord', 'roskam_xc_max_t'),
             ],
             promotes_outputs=['CD0'],
         )
         # Set fixed geometry constants at group scope
-        self.set_input_defaults('roskam_h_wing_intf', val=r_h, units='unitless')
         self.set_input_defaults(
             'roskam_xc_max_t',
             val=np.array([0.30, 0.30, 0.30]),
@@ -339,7 +336,7 @@ class RoskamMissionAeroGroup(om.Group):
             _FuselageMissionLiftDrag(num_nodes=nn),
             promotes_inputs=[
                 'cl',
-                'wing_CL_alpha',
+                'CL_alpha_total',
                 Dynamic.Atmosphere.MACH,
                 'fuselage_base_area',
                 'fuselage_planform_area',

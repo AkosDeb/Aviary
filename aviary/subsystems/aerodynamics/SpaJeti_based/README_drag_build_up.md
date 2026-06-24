@@ -28,17 +28,17 @@ The build-up uses three separate interference paths:
 **Fuselage-attached lifting surfaces** (wing, HTP — `component_kind = 'lifting_surface'`):
 
 ```text
-CD0 = Cf * FF * R_LS * (R_wf * R_h) * (1 + K_LP) * Swet / Sref
+CD0 = Cf * FF * R_LS * R_wf * (1 + K_LP) * Swet / Sref
 ```
 
 **H-wing VTP panels — wingtip-attached** (`component_kind = 'vtp'`):
 
 ```text
-CD0 = Cf * FF * R_LS * (1.0 * R_h) * (1 + K_LP) * Swet / Sref
+CD0 = Cf * FF * R_LS * R_tail * (1 + K_LP) * Swet / Sref
 ```
 
-R_wf = 1.0 for wingtip-attached surfaces (no fuselage interference).
-Conservative VTP wetted area: `Swet_vtp = 2 × Aircraft.VerticalTail.AREA × 2` (2 panels, 2 sides, no junction cutout).
+The current X-tail uses `R_tail = 1.04`. A future H-tail backend should publish
+the same factor used for the wing endplate / wingtip-tail junction.
 
 **Fuselage** (`component_kind = 'fuselage'` or `'raymer_fuselage'`):
 
@@ -62,7 +62,7 @@ CD0 = Cf * FF * Q * (1 + K_LP) * Swet / Sref
 | `FF` | form factor | DATCOM thickness formula (surfaces) or body formula (fuselages) |
 | `R_LS` | lifting-surface compressibility correction | DATCOM table: Mach × cos(Λ_t/c); 1.0 for bodies |
 | `R_wf` | wing-fuselage interference factor | DATCOM table: Mach × Re_fus (driven by `fuselage_length`); applied to fuselage-attached lifting surfaces and fuselage (Roskam Eq. 4.30) |
-| `R_h` | H-wing junction factor | scalar input `h_wing_interference_factor`; applied to all `lifting_surface` and `vtp` components; 1.04 typical for clean wingtip-VTP junction |
+| `R_tail` | tail junction/layout factor | `tail_drag_interference_factor`; 1.04 for the current X-tail |
 | `Q` | interference factor for bodies/nacelles | user input `interference_factor`; **ignored for lifting surfaces, vtp, and fuselage** |
 | `K_LP` | leakage and protuberance fraction | user input `leakage_protuberance_factor` |
 | `Swet` | **exposed** component wetted area | see Exposed Wetted Area Convention |
@@ -276,11 +276,70 @@ Supported `component_kinds`:
 
 | Kind | Form-factor path | Interference |
 |------|------------------|-------------|
-| `lifting_surface` | DATCOM/Roskam lifting-surface thickness form factor + `R_LS` | `R_wf × R_h` (fuselage-attached) |
-| `vtp` | same as `lifting_surface` | `R_h` only (R_wf = 1; wingtip-attached) |
+| `lifting_surface` | DATCOM/Roskam lifting-surface thickness form factor + `R_LS` | `R_wf` |
+| `vtp` | same as `lifting_surface` | `R_tail` |
 | `fuselage` | DATCOM streamlined-body form factor | `R_wf` |
 | `body` | DATCOM streamlined-body form factor | user `Q` |
 | `raymer_fuselage` | Raymer fuselage alternate | `R_wf` |
+
+---
+
+## Lifting-Surface Characteristic Lengths
+
+All lifting-surface Reynolds-number characteristic lengths use trapezoidal mean
+aerodynamic chord, not the simple area/span average:
+
+```text
+c_MAC = (2/3) * c_root * (1 + lambda + lambda^2) / (1 + lambda)
+```
+
+The main wing path consumes the live `wing_c_mac` output from `MACGeometryComp`.
+
+## Tail Drag Contract - Physical Panel MAC
+
+The characteristic length fed into `_GeomArrayAssembler` for the tail component
+comes from the formal `TailGeometryGroup` drag contract. It is the **physical
+panel mean aerodynamic chord**, not the projected geometry.
+
+```
+tail_drag_wetted_area = tail_physical_wetted_area
+tail_drag_characteristic_length = (2/3) * c_root * (1 + lambda + lambda^2) / (1 + lambda)
+tail_drag_interference_factor = 1.04    # current X-tail backend
+```
+
+For the X-tail backend, `tail_physical_wetted_area` is exposed external skin:
+
+```text
+tail_drag_wetted_area = 2 * N_panels * (S_panel - S_panel_buried_in_fuselage)
+```
+
+The matching fuselage skin holes are published as `tail_fuselage_cutout_area`:
+
+```text
+tail_fuselage_cutout_area = N_panels * K_tail * (t/c)_tail * c_root^2
+```
+
+`FuselageExposedWettedAreaComp` subtracts this tail cutout in addition to the
+existing two wing airfoil cutouts.
+
+Parasite-drag consumers should use `tail_drag_*` names so future tail backends
+can keep the same API.
+
+**Why not use the projected chord?**
+
+For a canted X-tail, projected aerodynamic area is intentionally different from
+true material geometry. Reynolds-number-based skin friction should use the real
+panel MAC, not a horizontal or vertical projection.
+
+**UAV numerical example** (single panel, c_root = 0.20 m, lambda = 0.50):
+
+```
+tail_drag_characteristic_length = (2/3) * 0.20 * (1 + 0.50 + 0.50^2) / (1 + 0.50)
+                                  = 0.1556 m
+```
+
+Using the physical panel MAC removes cant-angle and panel-count projection factors
+from the Reynolds number calculation.
 
 ---
 

@@ -122,7 +122,7 @@ aircraft:propulsion:total_starter_mass,0,kg
 # characteristic_length parameter error). mass_scaler=0 and wetted_area=0
 # zero out the FLOPS mass and drag contributions.
 # area and aspect_ratio here are FLOPS-only placeholders; the design-variable
-# driven geometry comes from HTailGeometry (outputs vtp_area / vtp_ar).
+# driven geometry comes from XTailGeometry (outputs vtp_area / vtp_ar).
 aircraft:vertical_tail:area,0.08,m**2
 aircraft:vertical_tail:aspect_ratio,1.2,unitless
 aircraft:vertical_tail:laminar_flow_lower,0,unitless

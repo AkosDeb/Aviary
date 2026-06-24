@@ -137,35 +137,43 @@ class ScholzWingletARCorrection(om.ExplicitComponent):
 
 
 class LiftCurveSlopePolhamus(om.ExplicitComponent):
-    """3-D lift curve slope using the Polhamus (DATCOM) formula with optional
+    """3-D lift curve slope using a Helmbold-Polhamus blend with optional
     wing-fuselage interference correction.
 
-    Computes the finite-wing lift curve slope C_L_alpha accounting for aspect
-    ratio, compressibility (Mach), leading/trailing edge sweep, non-ideal
-    airfoil section lift slope, and optionally a fuselage carry-through factor:
+    At high aspect ratio (AR ≥ 4) the full Polhamus/DATCOM formula is used,
+    which includes the quarter-chord sweep effect in the radical:
 
         C_L_alpha = K_wf · 2π A / [2 + √(A²(β² + tan²Λ_c/2) / k² + 4)]
 
-    where:
+    At low aspect ratio (AR ≤ 2) the sweep term is removed (Helmbold):
+
+        C_L_alpha = K_wf · 2π A / [2 + √(A²β² / k² + 4)]
+
+    The transition is a smooth tanh blend centred at AR = 3 with half-width ~1:
+
+        w_H = 0.5 · (1 − tanh(2·(AR − 3)))
+
+        inner = A²/k² · (β² + (1 − w_H) · tan²Λ_c/2) + 4
+
+    At AR ≈ 1.2–2.0 (X-tail VTP panels) w_H ≈ 1 and the sweep term vanishes;
+    Helmbold is better-calibrated against measured data at these low AR values
+    (Polhamus/DATCOM is accurate for AR ≥ 4). At AR ≥ 5 (main wing) w_H ≈ 0
+    and the full Polhamus formula is recovered.
+
+    Variables:
         A        = aspect ratio
         β        = √(1 − M²)          Prandtl-Glauert compressibility factor
-        k        = c_l_alpha / (2π)   section lift slope ratio (k=1 for thin-airfoil theory)
-        Λ_c/2    = semi-chord sweep angle (derived internally from quarter-chord sweep)
-        K_wf     = wing-fuselage interference factor on lift curve slope
+        k        = c_l_alpha / (2π)   section lift slope ratio (k=1 thin-airfoil)
+        Λ_c/2    = semi-chord sweep angle (derived from quarter-chord sweep)
+        K_wf     = wing-fuselage interference factor
 
     Wing-fuselage interference factor (Roskam Part VI, Eq. 8.17 / DATCOM 4.1.3.2):
 
         K_wf = 1 + 0.025 (d_f/b) − 0.25 (d_f/b)²
 
-    where d_f is the equivalent fuselage diameter and b is the wing span.
     K_wf = 1 when fuselage_diameter = 0 (default — correction disabled).
 
-    Setting M=0, Λ=0°, k=1 recovers the Helmbold formula (times K_wf):
-
-        C_L_alpha = K_wf · 2π A / (2 + √(A² + 4))
-
-    Sweep conversion (quarter-chord → semi-chord) uses the standard geometric identity
-    for a trapezoidal planform:
+    Sweep conversion (quarter-chord → semi-chord):
 
         tan Λ_c/2 = tan Λ_c/4 − (1 − λ) / [A (1 + λ)]
     """
@@ -231,25 +239,25 @@ class LiftCurveSlopePolhamus(om.ExplicitComponent):
         if np.any(AR <= 0.0):
             raise ValueError(
                 "LiftCurveSlopePolhamus: aspect_ratio must be > 0; "
-                f"got min AR={float(np.min(AR)):.6g}."
+                f"got min AR={float(np.min(AR.real)):.6g}."
             )
-        if np.any(AR < 2.0):
+        if np.any(AR.real < 0.5):
             warnings.warn(
-                f"LiftCurveSlopePolhamus: aspect_ratio min = {float(np.min(AR)):.3f} < 2.0. "
-                "The Polhamus/DATCOM formula is calibrated for AR >= 2; results at "
-                "lower AR may be unreliable.",
+                f"LiftCurveSlopePolhamus: aspect_ratio min = {float(np.min(AR.real)):.3f} < 0.5. "
+                "Below AR = 0.5 slender-body theory is more appropriate; "
+                "Helmbold/Polhamus results are unreliable.",
                 RuntimeWarning,
                 stacklevel=2,
             )
         if np.any(M < 0.0):
             raise ValueError(
                 "LiftCurveSlopePolhamus: Mach number must be >= 0; "
-                f"got min M={float(np.min(M)):.6g}."
+                f"got min M={float(np.min(M.real)):.6g}."
             )
-        if np.any(M >= 1.0):
+        if np.any(M.real >= 1.0):
             raise ValueError(
                 f"LiftCurveSlopePolhamus: Mach number must be < 1 (subsonic only); "
-                f"got max M={float(np.max(M)):.6g}. The Prandtl-Glauert factor beta=sqrt(1-M^2) is "
+                f"got max M={float(np.max(M.real)):.6g}. The Prandtl-Glauert factor beta=sqrt(1-M^2) is "
                 "undefined at M >= 1."
             )
 
@@ -257,16 +265,20 @@ class LiftCurveSlopePolhamus(om.ExplicitComponent):
         # tan(Λ_n) = tan(Λ_m) − 4(n−m)/AR · (1−λ)/(1+λ),  n=0.5, m=0.25 → 4·0.25 = 1
         tan_sweep_c2 = np.tan(sweep_c4) - (1.0 / AR) * (1.0 - lam) / (1.0 + lam)
 
-        beta_sq = 1.0 - M ** 2       # valid for M < 1; caller must enforce subsonic
+        beta_sq = 1.0 - M ** 2
 
         # Section lift slope ratio: k=1 for thin-airfoil theory (2D c_l_alpha = 2π)
         k = cl_a_2d / (2.0 * np.pi)
 
-        # Roskam Eq. 8.22 — term inside the radical, written in the numerically
-        # stable form A²(β² + tan²Λ_c/2)/k² + 4  (avoids division by β² near M=1)
-        inner = AR ** 2 * (beta_sq + tan_sweep_c2 ** 2) / k ** 2 + 4.0
+        # Helmbold-Polhamus smooth blend on the sweep term.
+        # w_H → 1 at low AR (Helmbold, sweep term removed): better calibrated for
+        #   low-AR fins (AR ≈ 1–2) where sweep contributes little to span loading.
+        # w_H → 0 at high AR (full Polhamus with sweep): accurate for AR ≥ 4.
+        # tanh centred at AR=3, half-width ≈ 1.4; fully differentiable for CS.
+        helmbold_weight = 0.5 * (1.0 - np.tanh(2.0 * (AR - 3.0)))
+        inner = AR ** 2 * (beta_sq + (1.0 - helmbold_weight) * tan_sweep_c2 ** 2) / k ** 2 + 4.0
 
-        r   = d_f / b  # d_f/b ratio; zero when fuselage_diameter=0 → K_wf=1
+        r    = d_f / b  # zero when fuselage_diameter=0 → K_wf=1
         k_wf = 1.0 + 0.025 * r - 0.25 * r ** 2
 
         outputs['K_wf']     = k_wf

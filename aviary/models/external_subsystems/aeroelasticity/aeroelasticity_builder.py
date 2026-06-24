@@ -57,6 +57,23 @@ class AeroelasticityGroup(om.Group):
                 'mass, and equivalent-property path still runs.'
             ),
         )
+        self.options.declare(
+            'num_speed_samples', default=20, types=int,
+            desc='Speed scan points for BeamModalFlutter. Reduce from the default (80) '
+                 'to cut compute() cost during coloring/FD steps without losing bisection '
+                 'accuracy (bracket widens but bisection still converges to sub-mm).',
+        )
+        self.options.declare(
+            'bisection_iterations', default=32, types=int,
+            desc='Flutter-speed bisection steps for BeamModalFlutter. '
+                 '32 gives 2^-32 relative precision — keep at 32 for accuracy.',
+        )
+        self.options.declare(
+            'pk_iterations', default=15, types=int,
+            desc='P-K reduced-frequency iterations per speed per mode. '
+                 'Reduce from the default (30) to cut compute() cost; '
+                 '15 is ample for convergence with initial k near the solution.',
+        )
 
     def setup(self):
         flutter_model = self.options['flutter_model']
@@ -67,8 +84,6 @@ class AeroelasticityGroup(om.Group):
             val=1.15 * 550.0 / 3.6,
             units='m/s',
         )
-        self.set_input_defaults(AE.VTP_AREAL_DENSITY, val=1.2, units='kg/m**2')
-        self.set_input_defaults(AE.VTP_TIP_PANEL_COUNT, val=2.0, units='unitless')
         self.set_input_defaults(AE.ENGINE_SPAN_FRACTION, val=0.0, units='unitless')
         self.set_input_defaults(AE.ENGINE_X_OFFSET_TO_EA, val=0.0, units='m')
         self.set_input_defaults(AE.FUEL_SPAN_FRACTION, val=0.35, units='unitless')
@@ -209,7 +224,11 @@ class AeroelasticityGroup(om.Group):
         if flutter_model == 'beam_modal_3dof_pk':
             self.add_subsystem(
                 'beam_modal_flutter',
-                BeamModalFlutter(),
+                BeamModalFlutter(
+                    num_speed_samples=self.options['num_speed_samples'],
+                    bisection_iterations=self.options['bisection_iterations'],
+                    pk_iterations=self.options['pk_iterations'],
+                ),
                 promotes_inputs=[
                     AE.SPANWISE_STATIONS,
                     AE.SPANWISE_CHORD,
@@ -301,16 +320,37 @@ class AeroelasticityBuilder(SubsystemBuilder):
         meta_data=None,
         material_name='aluminum_6061_t6',
         flutter_model='beam_modal_3dof_pk',
+        num_speed_samples=20,
+        bisection_iterations=32,
+        pk_iterations=15,
     ):
         self.material_name = material_name
         self.flutter_model = flutter_model
+        self.num_speed_samples = num_speed_samples
+        self.bisection_iterations = bisection_iterations
+        self.pk_iterations = pk_iterations
         super().__init__(name, meta_data)
 
     def build_pre_mission(self, aviary_inputs, subsystem_options=None):
         material_name = self.material_name
         flutter_model = self.flutter_model
+        num_speed_samples = self.num_speed_samples
+        bisection_iterations = self.bisection_iterations
+        pk_iterations = self.pk_iterations
         if subsystem_options and 'material_name' in subsystem_options:
             material_name = subsystem_options['material_name']
         if subsystem_options and 'flutter_model' in subsystem_options:
             flutter_model = subsystem_options['flutter_model']
-        return AeroelasticityGroup(material_name=material_name, flutter_model=flutter_model)
+        if subsystem_options and 'num_speed_samples' in subsystem_options:
+            num_speed_samples = subsystem_options['num_speed_samples']
+        if subsystem_options and 'bisection_iterations' in subsystem_options:
+            bisection_iterations = subsystem_options['bisection_iterations']
+        if subsystem_options and 'pk_iterations' in subsystem_options:
+            pk_iterations = subsystem_options['pk_iterations']
+        return AeroelasticityGroup(
+            material_name=material_name,
+            flutter_model=flutter_model,
+            num_speed_samples=num_speed_samples,
+            bisection_iterations=bisection_iterations,
+            pk_iterations=pk_iterations,
+        )

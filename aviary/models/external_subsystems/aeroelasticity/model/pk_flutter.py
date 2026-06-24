@@ -30,9 +30,11 @@ def build_structural_matrices(
 ):
     """Build M, C, K for plunge, pitch, and full-span control rotation."""
 
-    mass_per_span = max(mass_per_span, 1.0e-12)
-    control_inertia = max(control_inertia, 1.0e-12)
-    pitch_inertia = max(pitch_inertia, 1.0e-12)
+    # np.where on np.real(x) preserves the CS imaginary part when x > threshold;
+    # plain max() cannot compare complex to float and kills the CS derivative.
+    mass_per_span = np.where(np.real(mass_per_span) >= 1.0e-12, mass_per_span, 1.0e-12)
+    control_inertia = np.where(np.real(control_inertia) >= 1.0e-12, control_inertia, 1.0e-12)
+    pitch_inertia = np.where(np.real(pitch_inertia) >= 1.0e-12, pitch_inertia, 1.0e-12)
 
     mass_matrix = np.array(
         [

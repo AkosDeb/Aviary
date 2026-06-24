@@ -3,7 +3,6 @@ import openmdao.api as om
 from aviary.models.external_subsystems.aeroelasticity.variables import Aeroelasticity as AE
 from aviary.subsystems.mass.spajeti_based.wing_structural_mass import WingStructuralMass
 from aviary.subsystems.mass.spajeti_based.fuselage_structural_mass import FuselageStructuralMass
-from aviary.subsystems.mass.spajeti_based.tail_structural_mass import TailStructuralMass
 from aviary.subsystems.mass.spajeti_based.vtp_structural_mass import VTPStructuralMass
 from aviary.subsystems.mass.spajeti_based.propulsion_location import PropulsionLocationComp
 from aviary.subsystems.mass.spajeti_based.fuel_tank import FuelTankComp
@@ -54,6 +53,9 @@ class SpaJetiMassGroup(om.Group):
         self.set_input_defaults('wing_x_apex', val=-0.80, units='m')
         # cg (SpaJetiCGEstimator) defaults engine_mass=0.8; fuel_budget defaults 3.0.
         self.set_input_defaults('engine_mass', val=3.0, units='kg')
+        self.set_input_defaults('tail_physical_structural_mass', val=0.35, units='kg')
+        self.set_input_defaults('tail_physical_x_cg', val=-0.90, units='m')
+        self.set_input_defaults('tail_physical_z_cg', val=0.0, units='m')
 
         self.add_subsystem(
             'wing_mass',
@@ -97,18 +99,23 @@ class SpaJetiMassGroup(om.Group):
 
         self.add_subsystem(
             'tail_mass',
-            TailStructuralMass(),
+            om.ExecComp(
+                [
+                    'htp_structural_mass = 0.0 * tail_physical_structural_mass',
+                    'vtp_area_mass = tail_physical_structural_mass',
+                    'tail_structural_mass = tail_physical_structural_mass',
+                ],
+                tail_physical_structural_mass={'val': 0.35, 'units': 'kg'},
+                htp_structural_mass={'val': 0.0, 'units': 'kg'},
+                vtp_area_mass={'val': 0.35, 'units': 'kg'},
+                tail_structural_mass={'val': 0.35, 'units': 'kg'},
+            ),
             promotes_inputs=[
-                Aircraft.HorizontalTail.AREA,
-                Aircraft.VerticalTail.AREA,
-                'htp_areal_density',
-                'vtp_areal_density',
+                'tail_physical_structural_mass',
             ],
             promotes_outputs=[
                 'htp_structural_mass',
-                # vtp_structural_mass from TailStructuralMass is renamed to avoid
-                # conflict with the geometry-based vtp_structural_mass from VTPStructuralMass.
-                ('vtp_structural_mass', 'vtp_area_mass'),
+                'vtp_area_mass',
                 'tail_structural_mass',
             ],
         )
@@ -117,17 +124,9 @@ class SpaJetiMassGroup(om.Group):
             'vtp_mass',
             VTPStructuralMass(),
             promotes_inputs=[
-                Aircraft.VerticalTail.SPAN,
-                Aircraft.VerticalTail.ROOT_CHORD,
-                Aircraft.VerticalTail.TAPER_RATIO,
-                AE.VTP_AREAL_DENSITY,
-                AE.VTP_TIP_PANEL_COUNT,
-                Aircraft.Wing.SPAN,
-                Aircraft.Wing.SWEEP,
-                'wing_x_apex',
-                'wing_z_apex',
-                AE.FRONT_SPAR_FRACTION,
-                AE.REAR_SPAR_FRACTION,
+                'tail_physical_structural_mass',
+                'tail_physical_x_cg',
+                'tail_physical_z_cg',
             ],
             promotes_outputs=[
                 'vtp_structural_mass',

@@ -31,21 +31,22 @@ from aviary.models.aircraft.reporting.dashboard_reports import (
     write_optimization_summary_html,
 )
 from aviary.models.aircraft.reporting.printing_utils import (
+    check_nan_inf_outputs,
     configure_print_context,
     print_optimization_summary,
     print_run_header,
 )
 
 try:
-    from .optimization_setup import OPTIMIZER, configure_optimization
+    from .optimization_setup import OPTIMIZER, configure_optimization, save_coloring_cache
 except ImportError:
-    from optimization_setup import OPTIMIZER, configure_optimization
+    from optimization_setup import OPTIMIZER, configure_optimization, save_coloring_cache
 
 from aviary.subsystems.propulsion.small_turbojet import (
     SmallTurbojetModel,
     SmallTurbojetVariables,
 )
-from aviary.subsystems.geometry.flops_based.htail_geometry import HTailGeometry
+from aviary.subsystems.geometry.spajeti_based.tail_geometry import TailGeometryGroup
 from aviary.subsystems.geometry.flops_based.superellipse_fuselage import (
     SuperellipseFuselageGeometry,
 )
@@ -163,6 +164,7 @@ class FuselageExposedWettedAreaComp(om.ExplicitComponent):
         self.add_input('wing_taper_ratio',       val=0.8,   units='unitless')
         self.add_input('htail_c_root_at_fus',    val=0.0,   units='m')
         self.add_input('htail_tc_at_fus',        val=0.0,   units='unitless')
+        self.add_input('tail_fuselage_cutout_area', val=0.0, units='m**2')
 
         self.add_output('fuselage_exposed_wetted_area', val=0.585, units='m**2')
 
@@ -179,6 +181,7 @@ class FuselageExposedWettedAreaComp(om.ExplicitComponent):
         taper   = inputs['wing_taper_ratio']
         c_htail = inputs['htail_c_root_at_fus']
         tc_h    = inputs['htail_tc_at_fus']
+        tail_cutout = inputs['tail_fuselage_cutout_area']
 
         c_fus   = c_root * (1.0 - (1.0 - taper) * d_fus / b)
 
@@ -186,7 +189,7 @@ class FuselageExposedWettedAreaComp(om.ExplicitComponent):
         htail_cutout = 2.0 * K_h * tc_h * c_htail**2
 
         outputs['fuselage_exposed_wetted_area'] = (
-            inputs['fuselage_wetted_area'] - wing_cutout - htail_cutout
+            inputs['fuselage_wetted_area'] - wing_cutout - htail_cutout - tail_cutout
         )
 
 
@@ -203,6 +206,7 @@ def add_load_factor_subsystems(prob):
     fixed.add_output('rudder_cf_c',      val=RUDDER_CF_C,         units='unitless')
     fixed.add_output('rudder_eta_root',  val=RUDDER_ETA_ROOT,     units='unitless')
     fixed.add_output('rudder_eta_tip',   val=RUDDER_ETA_TIP,      units='unitless')
+    fixed.add_output('tail_cant_angle',  val=TAIL_CANT_ANGLE_DEG, units='deg')
     fixed.add_output('fus_nose_frac',    val=FUSELAGE_NOSE_LENGTH_FRACTION, units='unitless')
     fixed.add_output('fus_tail_frac',    val=FUSELAGE_TAIL_LENGTH_FRACTION, units='unitless')
     fixed.add_output('fus_max_width',    val=FUSELAGE_MAX_WIDTH_M,  units='m')
@@ -238,8 +242,8 @@ def add_load_factor_subsystems(prob):
                      desc='Wing root LE z-station from nose datum (positive down) [m]')
     model.add_subsystem('load_cond', fixed, promotes_outputs=['*'])
 
-    # â”€â”€ H-tail VTP geometry: span/chord -> area, AR, fuselage_vtp_span_ratio â”€â”€
-    model.add_subsystem('htail_geom', HTailGeometry(), promotes=['*'])
+    # Tail geometry: layout-specific internals -> stable physical/aero outputs.
+    model.add_subsystem('tail_geom', TailGeometryGroup(tail_type=TAIL_TYPE), promotes=['*'])
 
     if FUSELAGE_AFT_BASE_MODE == 'engine':
         model.add_subsystem(
@@ -291,20 +295,9 @@ def add_load_factor_subsystems(prob):
             'use "engine" or "fixed".'
         )
 
-    # VTP wetted area: 2 panels Ã— 2 sides, wingtip-mounted (no fuselage cutout).
-    # Formula matches project Swet convention: (S_planform - S_inside_fuselage) Ã— 2
-    # per panel, Ã— 2 panels. Feeds trajectory parameter 'vtp_wetted_area' so that
-    # VTP span DV changes propagate to mission parasite drag.
-    model.add_subsystem(
-        'vtp_wetted_area_comp',
-        om.ExecComp(
-            'vtp_wetted_area = 4.0 * vtp_area',
-            vtp_area={'val': 0.08, 'units': 'm**2'},
-            vtp_wetted_area={'val': 0.32, 'units': 'm**2'},
-        ),
-        promotes=['*'],
-    )
-
+    # TailGeometryGroup publishes tail_drag_wetted_area and
+    # tail_drag_characteristic_length for mission parasite drag.  For the X-tail,
+    # wetted area is all panels x 2 sides with no fuselage cutout.
     # â”€â”€ Parametric fuselage geometry: report-only until drag/CG integration â”€â”€
     model.add_subsystem(
         'superellipse_fuselage',
@@ -344,7 +337,7 @@ def add_load_factor_subsystems(prob):
             ('surface_taper',    av.Aircraft.Wing.TAPER_RATIO),
             ('surface_area',     av.Aircraft.Wing.AREA),
             ('dihedral_deg',     'aircraft:wing:dihedral'),
-            ('endplate_span',    av.Aircraft.VerticalTail.SPAN),
+            ('endplate_span',    'tail_aero_vertical_span'),
             'design_mach',
             'mach_upper_bound',
             'nz_min',
@@ -387,6 +380,7 @@ def add_load_factor_subsystems(prob):
             ('fus_max_width',    'fus_max_width'),
             ('wing_span',        av.Aircraft.Wing.SPAN),
             ('wing_taper_ratio', av.Aircraft.Wing.TAPER_RATIO),
+            'tail_fuselage_cutout_area',
         ],
         promotes_outputs=['fuselage_exposed_wetted_area'],
     )
@@ -395,24 +389,19 @@ def add_load_factor_subsystems(prob):
     model.add_subsystem(
         'vtp_surface', VTPSurface(cfg=VTP_SURFACE_CFG),
         promotes_inputs=[
-            ('surface_ar',       'vtp_ar'),                        # from htail_geom
-            ('surface_area',     'vtp_area'),                      # from htail_geom
+            ('surface_ar',       'tail_panel_ar'),
             ('surface_sweep_c4', av.Aircraft.VerticalTail.SWEEP),
             ('surface_taper',    av.Aircraft.VerticalTail.TAPER_RATIO),
             'design_mach',
-            'fuselage_vtp_span_ratio',
             'wing_ref_area',
-            av.Aircraft.HorizontalTail.AREA,
-            av.Aircraft.HorizontalTail.ASPECT_RATIO,
-            av.Aircraft.Fuselage.LENGTH,
-            av.Aircraft.VerticalTail.TAPER_RATIO,
-            av.Aircraft.VerticalTail.THICKNESS_TO_CHORD,
-            'rudder_cf_c', 'rudder_eta_root', 'rudder_eta_tip', 'delta_r_deg',
+            'tail_physical_panel_area',
+            'tail_cant_angle',
+            'tail_panel_count',
         ],
         promotes_outputs=[
             ('surface_CL_alpha', 'CL_alpha_v'),
-            'CY_beta_vtp',
-            'CY_delta_r',
+            'CY_beta_tail',
+            'CL_alpha_tail',
         ],
     )
 
@@ -420,10 +409,23 @@ def add_load_factor_subsystems(prob):
     model.add_subsystem('lat_load', LateralLoadFactor(), promotes=['*'])
 
     # â”€â”€ Longitudinal load factor -> Nz â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Sum wing + tail body-axis lift slopes before feeding Nz constraint.
+    model.add_subsystem(
+        'total_cl_alpha',
+        om.ExecComp(
+            'CL_alpha_total = wing_CL_alpha + CL_alpha_tail',
+            wing_CL_alpha={'val': 4.0, 'units': 'unitless'},
+            CL_alpha_tail={'val': 0.5, 'units': 'unitless'},
+            CL_alpha_total={'val': 4.5, 'units': 'unitless'},
+        ),
+        promotes_inputs=['wing_CL_alpha', 'CL_alpha_tail'],
+        promotes_outputs=['CL_alpha_total'],
+    )
+
     model.add_subsystem(
         'long_load', LongitudinalLoadFactor(),
         promotes_inputs=[
-            ('CL_alpha',      'wing_CL_alpha'),
+            ('CL_alpha',      'CL_alpha_total'),
             'dynamic_pressure',
             'wing_ref_area',
             'aircraft_mass',
@@ -534,6 +536,9 @@ def add_aeroelasticity_subsystems(prob):
                 if AEROELASTIC_FLUTTER_MODEL == 'none'
                 else AEROELASTIC_FLUTTER_MODEL
             ),
+            num_speed_samples=AEROELASTIC_SPEED_SAMPLES,
+            bisection_iterations=AEROELASTIC_BISECTION_ITER,
+            pk_iterations=AEROELASTIC_PK_ITERATIONS,
         ),
         promotes_inputs=['*'],
         promotes_outputs=['*'],
@@ -605,7 +610,6 @@ def add_spajeti_mass_subsystems(prob):
             AE.REAR_SPAR_FRACTION,
             av.Aircraft.Wing.TAPER_RATIO,
             av.Aircraft.Wing.SWEEP,
-            av.Aircraft.Wing.SPAN,
             ('wing_x_apex', 'wing_x_apex_fwd'),
             'wing_z_apex',
             av.Aircraft.Fuselage.LENGTH,
@@ -613,13 +617,9 @@ def add_spajeti_mass_subsystems(prob):
             (av.Aircraft.Fuselage.MAX_HEIGHT, 'fus_max_height'),
             'fuselage_wetted_area',
             'fuselage_centroid_x',
-            av.Aircraft.HorizontalTail.AREA,
-            av.Aircraft.VerticalTail.AREA,
-            av.Aircraft.VerticalTail.SPAN,
-            av.Aircraft.VerticalTail.ROOT_CHORD,
-            av.Aircraft.VerticalTail.TAPER_RATIO,
-            AE.VTP_AREAL_DENSITY,
-            AE.VTP_TIP_PANEL_COUNT,
+            'tail_physical_structural_mass',
+            'tail_physical_x_cg',
+            'tail_physical_z_cg',
             av.Aircraft.Design.GROSS_MASS,
             av.Aircraft.CrewPayload.TOTAL_PAYLOAD_MASS,
         ],
@@ -665,7 +665,7 @@ def build_problem():
     prob.load_inputs(aircraft_data=AIRCRAFT_DATA, phase_info=phase_info)
     prob.load_external_subsystems([
         SmallTurbojetModel(),
-        RoskamAeroBuilder(h_wing_interference_factor=H_WING_INTERFERENCE_FACTOR),
+        RoskamAeroBuilder(),
     ])
 
     prob.check_and_preprocess_inputs()
@@ -721,6 +721,22 @@ def main():
     with warnings.catch_warnings(), np.errstate(invalid='ignore', over='ignore'):
         warnings.simplefilter('ignore', RuntimeWarning)
         prob.run_aviary_problem()
+
+    save_coloring_cache(prob)
+
+    if report_config.PRINT_NAN_INF_GUARD:
+        check_nan_inf_outputs(prob)
+
+    # ── Gradient-robustness checks (TOOD.md "Gradient robustness") ──────────
+    # Lazy import breaks the circular dependency: gradient_checks imports
+    # build_problem from this module, so we cannot import it at module level.
+    if report_config.RUN_BOUNDS_SENSITIVITY or report_config.RUN_CHECK_TOTALS:
+        try:
+            from .gradient_checks import main as _run_gradient_checks
+        except ImportError:
+            from gradient_checks import main as _run_gradient_checks
+        pts = ('interior', 'lower', 'upper') if report_config.RUN_BOUNDS_SENSITIVITY else ('interior',)
+        _run_gradient_checks(points=pts)
 
     remove_dashboard_incompatible_recorder(prob)
     payload_range_csv = write_payload_range_report(prob)

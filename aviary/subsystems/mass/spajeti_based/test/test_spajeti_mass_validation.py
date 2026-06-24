@@ -8,7 +8,6 @@ from aviary.subsystems.mass.spajeti_based.cg_estimator import SpaJetiCGEstimator
 from aviary.subsystems.mass.spajeti_based.fuselage_structural_mass import FuselageStructuralMass
 from aviary.subsystems.mass.spajeti_based.mass_group import SpaJetiMassGroup
 from aviary.subsystems.mass.spajeti_based.propulsion_location import PropulsionLocationComp
-from aviary.subsystems.mass.spajeti_based.tail_structural_mass import TailStructuralMass
 from aviary.subsystems.mass.spajeti_based.vtp_structural_mass import VTPStructuralMass
 from aviary.subsystems.mass.spajeti_based.wing_structural_mass import WingStructuralMass
 from aviary.variable_info.variables import Aircraft
@@ -109,48 +108,33 @@ def test_wing_cg_uses_body_fixed_x_forward_frame():
     assert prob.get_val('wing_x_cg', units='m') < 0.0
 
 
-def test_vtp_mass_increases_with_vtp_span_and_cg_is_aft_of_wing_apex():
+def test_vtp_adapter_passes_tail_physical_mass_and_cg_to_legacy_names():
     prob = _make_problem(VTPStructuralMass())
-    prob.set_val(Aircraft.VerticalTail.ROOT_CHORD, 0.24, units='m')
-    prob.set_val(Aircraft.VerticalTail.TAPER_RATIO, 0.8)
-    prob.set_val(AE.VTP_AREAL_DENSITY, 1.2, units='kg/m**2')
-    prob.set_val(AE.VTP_TIP_PANEL_COUNT, 2.0)
-    prob.set_val(Aircraft.Wing.SPAN, 1.8, units='m')
-    prob.set_val(Aircraft.Wing.SWEEP, 0.0, units='deg')
-    prob.set_val('wing_x_apex', -0.80, units='m')
-    prob.set_val('wing_z_apex', 0.0, units='m')
-    prob.set_val(AE.FRONT_SPAR_FRACTION, 0.15)
-    prob.set_val(AE.REAR_SPAR_FRACTION, 0.60)
-
-    prob.set_val(Aircraft.VerticalTail.SPAN, 0.20, units='m')
+    prob.set_val('tail_physical_structural_mass', 0.20, units='kg')
+    prob.set_val('tail_physical_x_cg', -0.92, units='m')
+    prob.set_val('tail_physical_z_cg', 0.03, units='m')
     prob.run_model()
     mass_short = _scalar(prob.get_val('vtp_structural_mass', units='kg'))
 
-    prob.set_val(Aircraft.VerticalTail.SPAN, 0.40, units='m')
+    prob.set_val('tail_physical_structural_mass', 0.40, units='kg')
+    prob.set_val('tail_physical_x_cg', -0.97, units='m')
+    prob.set_val('tail_physical_z_cg', -0.01, units='m')
     prob.run_model()
     mass_tall = _scalar(prob.get_val('vtp_structural_mass', units='kg'))
 
     assert mass_tall > mass_short
     assert mass_tall / mass_short == pytest.approx(2.0)
-    assert prob.get_val('vtp_x_cg', units='m') < -0.80
-    assert prob.get_val('vtp_z_cg', units='m') == pytest.approx(0.0)
+    assert prob.get_val('vtp_x_cg', units='m') == pytest.approx(-0.97)
+    assert prob.get_val('vtp_z_cg', units='m') == pytest.approx(-0.01)
 
 
-def test_vtp_cg_translates_rigidly_with_wing_apex():
+def test_vtp_adapter_cg_translates_with_tail_physical_cg():
     prob = _make_problem(VTPStructuralMass())
-    prob.set_val(Aircraft.VerticalTail.SPAN, 0.31, units='m')
-    prob.set_val(Aircraft.VerticalTail.ROOT_CHORD, 0.24, units='m')
-    prob.set_val(Aircraft.VerticalTail.TAPER_RATIO, 0.8)
-    prob.set_val(Aircraft.Wing.SPAN, 1.8, units='m')
-    prob.set_val(Aircraft.Wing.SWEEP, 5.0, units='deg')
-    prob.set_val(AE.FRONT_SPAR_FRACTION, 0.15)
-    prob.set_val(AE.REAR_SPAR_FRACTION, 0.60)
-
-    prob.set_val('wing_x_apex', -0.80, units='m')
+    prob.set_val('tail_physical_x_cg', -0.80, units='m')
     prob.run_model()
     x0 = _scalar(prob.get_val('vtp_x_cg', units='m'))
 
-    prob.set_val('wing_x_apex', -0.70, units='m')
+    prob.set_val('tail_physical_x_cg', -0.70, units='m')
     prob.run_model()
     x1 = _scalar(prob.get_val('vtp_x_cg', units='m'))
 
@@ -179,7 +163,6 @@ def test_spajeti_mass_group_baseline_outputs_have_consistent_signs_and_totals():
     prob.set_val(AE.REAR_SPAR_FRACTION, 0.60)
     prob.set_val(Aircraft.Wing.TAPER_RATIO, 0.8)
     prob.set_val(Aircraft.Wing.SWEEP, 0.0, units='deg')
-    prob.set_val(Aircraft.Wing.SPAN, 1.8, units='m')
     prob.set_val('wing_x_apex', -0.80, units='m')
     prob.set_val('wing_z_apex', 0.0, units='m')
     prob.set_val('non_structural_mass_fraction', 0.25)
@@ -191,15 +174,9 @@ def test_spajeti_mass_group_baseline_outputs_have_consistent_signs_and_totals():
     prob.set_val('fuselage_centroid_x', 0.90, units='m')
     prob.set_val('fuselage_areal_density', 1.95, units='kg/m**2')
 
-    prob.set_val(Aircraft.HorizontalTail.AREA, 0.30, units='m**2')
-    prob.set_val(Aircraft.VerticalTail.AREA, 0.10, units='m**2')
-    prob.set_val(Aircraft.VerticalTail.SPAN, 0.31, units='m')
-    prob.set_val(Aircraft.VerticalTail.ROOT_CHORD, 0.24, units='m')
-    prob.set_val(Aircraft.VerticalTail.TAPER_RATIO, 0.8)
-    prob.set_val(AE.VTP_AREAL_DENSITY, 1.2, units='kg/m**2')
-    prob.set_val(AE.VTP_TIP_PANEL_COUNT, 2.0)
-    prob.set_val('htp_areal_density', 1.2, units='kg/m**2')
-    prob.set_val('vtp_areal_density', 1.2, units='kg/m**2')
+    prob.set_val('tail_physical_structural_mass', 0.48, units='kg')
+    prob.set_val('tail_physical_x_cg', -0.92, units='m')
+    prob.set_val('tail_physical_z_cg', 0.0, units='m')
 
     prob.set_val('engine_mass', 2.0, units='kg')
     prob.set_val('fuel_mass', 1.0, units='kg')
@@ -225,18 +202,15 @@ def test_spajeti_mass_group_baseline_outputs_have_consistent_signs_and_totals():
     assert _scalar(prob.get_val('fuselage_structural_mass', units='kg')) == pytest.approx(
         2.79, rel=0.05
     )
-    assert _scalar(prob.get_val('vtp_structural_mass', units='kg')) == pytest.approx(
-        0.321, rel=0.05
-    )
-    assert 7.0 <= empty <= 7.3
-    assert _scalar(prob.get_val('aircraft_x_cg', units='m')) == pytest.approx(-1.11, rel=0.03)
+    assert _scalar(prob.get_val('vtp_structural_mass', units='kg')) == pytest.approx(0.48)
+    assert 7.2 <= empty <= 7.4
+    assert _scalar(prob.get_val('aircraft_x_cg', units='m')) == pytest.approx(-1.07, rel=0.03)
 
 
 def test_cs_declared_mass_component_partials_pass_against_finite_difference():
     cases = [
         (WingStructuralMass(num_stations=5), _seed_wing),
         (FuselageStructuralMass(), _seed_fuselage),
-        (TailStructuralMass(), _seed_tail),
         (VTPStructuralMass(), _seed_vtp),
         (PropulsionLocationComp(), _seed_propulsion),
         (SpaJetiCGEstimator(), _seed_cg),
@@ -302,25 +276,10 @@ def _seed_fuselage(prob):
     prob.set_val('fuselage_areal_density', 1.95, units='kg/m**2')
 
 
-def _seed_tail(prob):
-    prob.set_val(Aircraft.HorizontalTail.AREA, 0.30, units='m**2')
-    prob.set_val(Aircraft.VerticalTail.AREA, 0.10, units='m**2')
-    prob.set_val('htp_areal_density', 1.2, units='kg/m**2')
-    prob.set_val('vtp_areal_density', 1.2, units='kg/m**2')
-
-
 def _seed_vtp(prob):
-    prob.set_val(Aircraft.VerticalTail.SPAN, 0.31, units='m')
-    prob.set_val(Aircraft.VerticalTail.ROOT_CHORD, 0.24, units='m')
-    prob.set_val(Aircraft.VerticalTail.TAPER_RATIO, 0.8)
-    prob.set_val(AE.VTP_AREAL_DENSITY, 1.2, units='kg/m**2')
-    prob.set_val(AE.VTP_TIP_PANEL_COUNT, 2.0)
-    prob.set_val(Aircraft.Wing.SPAN, 1.8, units='m')
-    prob.set_val(Aircraft.Wing.SWEEP, 5.0, units='deg')
-    prob.set_val('wing_x_apex', -0.80, units='m')
-    prob.set_val('wing_z_apex', 0.0, units='m')
-    prob.set_val(AE.FRONT_SPAR_FRACTION, 0.15)
-    prob.set_val(AE.REAR_SPAR_FRACTION, 0.60)
+    prob.set_val('tail_physical_structural_mass', 0.32, units='kg')
+    prob.set_val('tail_physical_x_cg', -0.92, units='m')
+    prob.set_val('tail_physical_z_cg', 0.0, units='m')
 
 
 def _seed_propulsion(prob):

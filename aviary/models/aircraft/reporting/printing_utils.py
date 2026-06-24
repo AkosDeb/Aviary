@@ -225,7 +225,7 @@ def print_aero_detail(prob):
     print_result('Output: CL_alpha  (wing-alone)',        wing_cl_alpha, '/rad')
 
     # â”€â”€ 4. VTP geometry inputs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    print('\nVTP Geometry - HTailGeometry (each panel; x2 for full H-tail)')
+    print('\nVTP Geometry - tail geometry equivalent outputs')
     print('-' * 70)
     print_result('Input:  b_v  [design var]',            vtp_span,   'm')
     print_result('Input:  c_root  [CSV]',                vtp_root_c, 'm')
@@ -272,7 +272,7 @@ def print_aero_detail(prob):
     # â”€â”€ 7. Passive side-force â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     print('\nPassive Side-Force - CyBetaVtp (x2 for both VTP panels)')
     print('-' * 70)
-    print_result('Input: AR_v (from HTailGeometry)',     vtp_ar,         '')
+    print_result('Input: AR_v (from tail geometry)',     vtp_ar,         '')
     print_result('Input: S_v per panel',                 vtp_area,       'm^2')
     print_result('Input: S_ref (wing)',                  wing_area,      'm^2')
     print_result('Input: 2r_i/b_v (fus. ratio)',         fus_vtp_ratio,  '')
@@ -375,8 +375,8 @@ def print_parasite_drag_detail(prob):
     wing_sweep      = safe_get(prob, av.Aircraft.Wing.SWEEP,                   'deg')
     wing_tc         = safe_get(prob, 'wing_section_tc')
 
-    vtp_area        = safe_get(prob, 'vtp_area',                               'm**2')
-    vtp_avg_chord   = safe_get(prob, 'vtp_avg_chord',                           'm')
+    vtp_area        = safe_get(prob, 'tail_aero_vertical_area',                'm**2')
+    vtp_avg_chord   = safe_get(prob, 'tail_panel_avg_chord',                    'm')
     vtp_sweep       = safe_get(prob, av.Aircraft.VerticalTail.SWEEP,           'deg')
     vtp_tc          = safe_get(prob, av.Aircraft.VerticalTail.THICKNESS_TO_CHORD)
 
@@ -843,5 +843,71 @@ def print_optimization_summary(
     print('\n' + '=' * 70)
     print('OPTIMIZATION COMPLETE')
     print('=' * 70)
+
+
+# ── NaN / Inf guard ───────────────────────────────────────────────────────────
+
+def check_nan_inf_outputs(prob, *, out_stream=None):
+    """Scan every promoted model output for NaN or Inf after a solve.
+
+    Prints a formatted report to *out_stream* (stdout by default) listing each
+    variable that contains at least one NaN or Inf value, along with the
+    offending component's absolute path and the bad values.
+
+    Returns True if any problems were found, False otherwise.  Intended to be
+    called after ``prob.run_aviary_problem()`` or ``prob.run_model()`` before
+    the main optimization loop so that a broken baseline is caught before
+    IPOPT wastes time on a poisoned gradient step.
+    """
+    import sys
+    stream = out_stream if out_stream is not None else sys.stdout
+
+    outputs = prob.model.list_outputs(
+        val=True,
+        units=False,
+        prom_name=True,
+        residuals=False,
+        print_arrays=False,
+        out_stream=None,
+    )
+
+    problems = []
+    for abs_name, meta in outputs:
+        val = np.asarray(meta['val'], dtype=float)
+        has_nan = bool(np.any(np.isnan(val)))
+        has_inf = bool(np.any(np.isinf(val)))
+        if has_nan or has_inf:
+            flags = []
+            if has_nan:
+                flags.append('NaN')
+            if has_inf:
+                flags.append('Inf')
+            prom = meta.get('prom_name', abs_name)
+            problems.append((abs_name, prom, ', '.join(flags), val))
+
+    sep = '=' * 70
+    if problems:
+        print(f'\n{sep}', file=stream)
+        print(f'NaN/Inf DETECTED — {len(problems)} variable(s) after solve:', file=stream)
+        print(sep, file=stream)
+        for abs_name, prom, flags, val in problems:
+            short = abs_name.split('.')[-2] + '.' + abs_name.split('.')[-1]
+            print(f'  [{flags}]  {short}', file=stream)
+            print(f'         prom : {prom}', file=stream)
+            print(f'         abs  : {abs_name}', file=stream)
+            print(f'         val  : {val}', file=stream)
+        print(sep, file=stream)
+        print(
+            'ACTION: run prob.check_partials(compact_print=False) to identify '
+            'the component whose compute() produces NaN under CS perturbation.',
+            file=stream,
+        )
+        print(f'{sep}\n', file=stream)
+        return True
+
+    print(f'\n{sep}', file=stream)
+    print('NaN/Inf guard PASSED — no NaN or Inf in any model output.', file=stream)
+    print(f'{sep}\n', file=stream)
+    return False
 
 

@@ -2,21 +2,28 @@
 
 This document covers the OpenMDAO components in `cy_beta_vtp.py` and
 `lateral_load_factor.py` that compute the side-force and lift-force
-derivatives for the H-tail configuration and convert them to structural
+derivatives for the tail geometry equivalent surfaces and convert them to structural
 load factors `Ny` (lateral) and `Nz` (longitudinal/vertical).
 
 ```text
-HTailGeometry  (geometry/flops_based/htail_geometry.py)
-    ↓  fuselage_vtp_span_ratio, VerticalTail.AREA/AR, wing_ref_area
-CyBetaVtp       → CY_beta_vtp               (H-tail VTPs, passive stability)
-CyDeltaRudder   → CY_delta_r                (rudder authority)
-    ↓
-LateralLoadFactor → CY_beta_total, CY, side_force, Ny
+XTailGeometry  (geometry/spajeti_based/tail_geometry.py)
+    ↓  tail_physical_panel_area, tail_panel_ar, tail_cant_angle,
+    ↓  tail_panel_count, wing_ref_area
 
-EndplateARCorrection → AR_eff
-    ↓
-LiftCurveSlopePolhamus → CL_alpha           (wing, endplate-corrected)
-    ↓
+VTPSurface  (lifting_surface.py)
+    LiftCurveSlopePolhamus(AR=tail_panel_ar) → surface_CL_alpha   (physical panel)
+    TailCantRotation → CY_beta_tail          (body-axis side-force slope)
+                     → CL_alpha_tail         (body-axis lift slope)
+
+LateralLoadFactor → CY_beta_total, CY, side_force, Ny   (fixed tail, no rudder)
+
+WingSurface  (lifting_surface.py)
+    EndplateARCorrection → AR_eff
+    LiftCurveSlopePolhamus → wing_CL_alpha   (wing, endplate-corrected)
+
+total_cl_alpha (ExecComp)
+    CL_alpha_total = wing_CL_alpha + CL_alpha_tail
+
 LongitudinalLoadFactor → CL, lift, Nz
 
 ─── Excluded (pending full integration) ───────────────────────────
@@ -37,11 +44,92 @@ surface is stabilising (side force opposes the sideslip).
 
 ---
 
-## CyBetaVtp — H-tail vertical tail panels
+## TailCantRotation — cant-angle decomposition of panel lift slope
+
+**File:** `cy_beta_vtp.py`
 
 ### What it computes
 
-The side-force derivative produced by both VTP panels of an H-tail configuration:
+`TailCantRotation` decomposes the physical-panel Polhamus lift slope
+(`CL_alpha_panel`, output of `VTPSurface`'s `LiftCurveSlopePolhamus`)
+into the two body-axis stability derivatives needed by the load-factor
+constraints.
+
+For **N** symmetric panels each canted at angle **φ** from horizontal:
+
+```
+CY_beta_tail  = −N × sin²(φ) × CL_alpha_panel × S_panel / S_ref
+CL_alpha_tail = +N × cos²(φ) × CL_alpha_panel × S_panel / S_ref
+```
+
+**Physical interpretation:**
+
+- The component of panel lift that acts in the body **y-direction** (side force)
+  scales as sin(φ) per panel; the total side-force derivative is −N sin²(φ)
+  times the normalised lift slope.  The sign is negative (stabilising: side
+  force opposes sideslip) matching the DATCOM convention for `CY_beta`.
+- The component that acts in the body **z-direction** (vertical lift) scales as
+  cos(φ); the tail contribution to `CL_alpha_total` is +N cos²(φ) times the
+  normalised lift slope.
+
+**Limiting cases:**
+
+| φ | Configuration | CY_beta_tail | CL_alpha_tail |
+|---|---------------|-------------|---------------|
+| 90° | pure VTP (vertical) | −N × CL_alpha_panel × S/S_ref | 0 |
+| 0° | pure HTP (horizontal) | 0 | +N × CL_alpha_panel × S/S_ref |
+| 45° | X-tail | −N/2 × CL_alpha_panel × S/S_ref | +N/2 × … |
+
+At 45° the lateral and longitudinal authority are exactly equal in magnitude.
+
+### Why physical-panel AR, not projected AR
+
+`VTPSurface` feeds `tail_panel_ar` (physical panel AR) into Polhamus, not the
+projected `tail_aero_vertical_ar`.  Using the physical AR gives the correct
+Reynolds number scaling and Polhamus lift slope for the actual panel.  The
+cant-angle decomposition in `TailCantRotation` then projects the panel lift
+into body axes — the projection must happen *after* computing the lift slope,
+not before.
+
+### Inputs and outputs
+
+| Variable | Default | Units | Description |
+|----------|---------|-------|-------------|
+| `CL_alpha_panel` | 2.5 | 1/rad | Physical-panel lift slope from Polhamus |
+| `tail_physical_panel_area` | 0.08 | m² | Single-panel planform area |
+| `tail_cant_angle` | 45.0 | deg | Panel cant angle from horizontal |
+| `tail_panel_count` | 4.0 | — | Total number of panels |
+| `wing_ref_area` | 0.45 | m² | Wing reference area S_ref |
+| **`CY_beta_tail`** | — | 1/rad | Body-axis side-force derivative |
+| **`CL_alpha_tail`** | — | 1/rad | Body-axis lift-slope contribution |
+
+All partials are declared with `method='cs'`.
+
+### UAV numerical example
+
+SpaJeti H-wing X-tail baseline: N=4 panels, φ=45°, NACA 0012 panel at the
+physical panel AR.  `VTPSurface` Polhamus gives `CL_alpha_panel ≈ 1.72 /rad`;
+single panel area `S_panel = 0.08 m²`; wing reference area `S_ref = 0.45 m²`.
+
+```
+authority = N × CL_alpha_panel × S_panel / S_ref
+          = 4 × 1.72 × 0.08 / 0.45
+          = 1.2213 /rad
+
+CY_beta_tail  = −1.2213 × sin²(45°) = −1.2213 × 0.5 = −0.6107 /rad
+CL_alpha_tail = +1.2213 × cos²(45°) = +1.2213 × 0.5 = +0.6107 /rad
+```
+
+Both outputs have equal magnitude at 45° cant (X-tail equally shares lateral
+and longitudinal authority).
+
+---
+
+## CyBetaVtp — vertical-equivalent tail panels (legacy H-tail path)
+
+### What it computes
+
+The side-force derivative produced by both vertical-equivalent tail panels:
 
 ```
 CY_beta_vtp = -2 * k_v * CY_beta_v_eff * (S_v / S_ref)
@@ -55,8 +143,8 @@ The factor of **2** accounts for the two symmetric VTP panels.
 |--------|------|--------------------|
 | `k_v` | body interference factor | interpolated from Table 2 vs `2*r_i / b_v` |
 | `CY_beta_v_eff` | isolated panel side-force slope | interpolated from Table 1 vs `AR_vtp` |
-| `S_v` | reference area of one VTP panel | from `HTailGeometry` |
-| `S_ref` | wing reference area | from `HTailGeometry` |
+| `S_v` | reference area of one VTP panel | from tail geometry |
+| `S_ref` | wing reference area | from tail geometry |
 
 ### Table 1 — isolated panel effectiveness CY_beta_v_eff vs AR
 
@@ -104,10 +192,10 @@ optimisation.**
 
 | Variable | Source | Units |
 |----------|--------|-------|
-| `fuselage_vtp_span_ratio` (2*r_i/b_v) | `HTailGeometry` | — |
-| `aircraft:vertical_tail:aspect_ratio` | `HTailGeometry` | — |
-| `aircraft:vertical_tail:area` | `HTailGeometry` | m² |
-| `wing_ref_area` | `HTailGeometry` | m² |
+| `fuselage_vtp_span_ratio` (2*r_i/b_v) | tail geometry | — |
+| `vtp_ar` | tail geometry | — |
+| `vtp_area` | tail geometry | m² |
+| `wing_ref_area` | tail geometry | m² |
 | **`CY_beta_vtp`** | output | 1/rad |
 
 ---
@@ -210,32 +298,30 @@ first or last interval).
 
 ### What it computes
 
-Converts the passive VTP side-force derivative and active rudder authority to a lateral
-load factor at a fixed design-point flight condition:
+Converts the passive tail side-force derivative to a lateral load factor at a
+fixed design-point flight condition (fixed tail — no rudder):
 
 ```
-CY_beta_total = CY_beta_vtp                          [/rad]  (VTP only)
-CY            = CY_beta_total × beta + CY_delta_r × delta_r  [−]
+CY_beta_total = CY_beta_tail                         [/rad]  (tail only)
+CY            = CY_beta_total × beta                 [−]
 side_force    = CY × q × S_ref                       [N]
 Ny            = −side_force / (mass × g)             [−]  (positive magnitude)
 ```
 
-Both `CY_beta_vtp` and `CY_delta_r` carry a negative sign by DATCOM convention
-(wind from left → stabilising force toward right → `CY < 0`).  Negating in the
-final step gives a positive `Ny`.
+`CY_beta_tail` carries a negative sign by DATCOM convention (wind from left →
+stabilising force toward right → `CY < 0`).  Negating in the final step gives
+a positive `Ny`.
 
 ### Inputs and outputs
 
 | Variable | Default | Units | Description |
 |----------|---------|-------|-------------|
-| `CY_beta_vtp` | 0.0 | 1/rad | From `CyBetaVtp` |
-| `CY_delta_r` | 0.0 | 1/rad | From `CyDeltaRudder` |
-| `delta_r_deg` | 0.0 | deg | Rudder deflection at test condition |
+| `CY_beta_tail` | 0.0 | 1/rad | From `TailCantRotation` |
 | `beta_deg` | 15.0 | deg | Max sideslip angle |
 | `dynamic_pressure` | 1000.0 | Pa | q at test condition |
-| `wing_ref_area` | 0.45 | m² | From `HTailGeometry` |
+| `wing_ref_area` | 0.45 | m² | From tail geometry |
 | `aircraft_mass` | 15.0 | kg | At test condition |
-| **`CY_beta_total`** | — | 1/rad | Passive side-force slope (VTP) |
+| **`CY_beta_total`** | — | 1/rad | Passive side-force slope (tail) |
 | **`CY`** | — | − | Total side-force coefficient |
 | **`side_force`** | — | N | Side force at test condition |
 | **`Ny`** | — | − | Lateral load factor magnitude |
@@ -249,14 +335,14 @@ prob.model.add_constraint('Ny', lower=5.0)
 ### Wiring example
 
 ```python
-from aviary.subsystems.geometry.flops_based.htail_geometry import HTailGeometry
-from aviary.subsystems.aerodynamics.SpaJeti_based.cy_beta_vtp import CyBetaVtp, CyDeltaRudder
+from aviary.subsystems.geometry.spajeti_based.tail_geometry import XTailGeometry
+from aviary.subsystems.aerodynamics.SpaJeti_based.lifting_surface import VTPSurface
 from aviary.subsystems.aerodynamics.SpaJeti_based.lateral_load_factor import LateralLoadFactor
 
 model = om.Group()
-model.add_subsystem('geom',     HTailGeometry(),   promotes=['*'])
-model.add_subsystem('cy_vtp',   CyBetaVtp(),       promotes=['*'])
-model.add_subsystem('rudder',   CyDeltaRudder(),   promotes=['*'])
+model.add_subsystem('geom',     XTailGeometry(),   promotes=['*'])
+# VTPSurface internally wires Polhamus → TailCantRotation → CY_beta_tail, CL_alpha_tail
+model.add_subsystem('vtp_surf', VTPSurface(VTP_SURFACE_CFG), promotes=['*'])
 model.add_subsystem('lat_load', LateralLoadFactor(), promotes=['*'])
 ```
 
@@ -277,10 +363,13 @@ lift  = CL × q × S_ref                               [N]
 Nz    = lift / (mass × g)                            [−]  (positive upward)
 ```
 
-`CL_alpha` must come from `LiftCurveSlopePolhamus` with `AR_eff` from
-`EndplateARCorrection` — do **not** use the uncorrected wing AR or the VTP AR here.
+`CL_alpha` must be the **total** lift slope including the tail contribution.  Wire
+`CL_alpha_total = wing_CL_alpha + CL_alpha_tail` (from a `total_cl_alpha` ExecComp)
+into `LongitudinalLoadFactor.CL_alpha`, not just the wing lift slope.
+`wing_CL_alpha` comes from `LiftCurveSlopePolhamus` with `AR_eff` from
+`EndplateARCorrection`; `CL_alpha_tail` comes from `TailCantRotation`.
 
-`alpha_max_deg` defaults to **12°**.  This is measured from the zero-lift line
+`alpha_max_deg` defaults to **15°** (NACA 4415 at Re~2e6 from airfoiltools.com).  This is measured from the zero-lift line
 (equivalent to the aerodynamic angle of attack); for a near-symmetric UAV wing
 the zero-lift angle is small, so this is a reasonable approximation.
 
@@ -358,27 +447,28 @@ prob.model.add_constraint('Nz', lower=<required_load_factor>)
 
 ```python
 import openmdao.api as om
-from aviary.subsystems.geometry.flops_based.htail_geometry       import HTailGeometry
-from aviary.subsystems.aerodynamics.SpaJeti_based.cy_beta_vtp      import CyBetaVtp, CyDeltaRudder
-from aviary.subsystems.aerodynamics.SpaJeti_based.lift_curve_slope import (
-    EndplateARCorrection, LiftCurveSlopePolhamus,
+from aviary.subsystems.geometry.spajeti_based.tail_geometry import XTailGeometry
+from aviary.subsystems.aerodynamics.SpaJeti_based.lifting_surface import (
+    WingSurface, VTPSurface,
 )
 from aviary.subsystems.aerodynamics.SpaJeti_based.lateral_load_factor import (
     LateralLoadFactor, LongitudinalLoadFactor,
 )
 
 model = om.Group()
-model.add_subsystem('geom',      HTailGeometry(),          promotes=['*'])
-model.add_subsystem('cy_vtp',    CyBetaVtp(),              promotes=['*'])
-model.add_subsystem('rudder',    CyDeltaRudder(),          promotes=['*'])
+# Tail geometry → tail_physical_panel_area, tail_panel_ar, tail_cant_angle, …
+model.add_subsystem('geom',      XTailGeometry(),          promotes=['*'])
+# WingSurface: Scholz AR correction + Polhamus → wing_CL_alpha
+model.add_subsystem('wing_surf', WingSurface(WING_SURFACE_CFG), promotes=['*'])
+# VTPSurface: Polhamus(tail_panel_ar) → TailCantRotation → CY_beta_tail, CL_alpha_tail
+model.add_subsystem('vtp_surf',  VTPSurface(VTP_SURFACE_CFG),  promotes=['*'])
+# Lateral Ny constraint
 model.add_subsystem('lat_load',  LateralLoadFactor(),      promotes=['*'])
-model.add_subsystem('endplate',  EndplateARCorrection(),   promotes=['*'])
-model.add_subsystem('polhamus',  LiftCurveSlopePolhamus(), promotes=['*'])
-model.add_subsystem('long_load', LongitudinalLoadFactor(), promotes=['*'])
-
-# Non-promoting connections
-model.connect('endplate.AR_eff',   'polhamus.aspect_ratio')
-model.connect('polhamus.CL_alpha', 'long_load.CL_alpha')
-# rudder also needs: model.connect('vtp_polhamus.CL_alpha', 'rudder.CL_alpha_v')
-# (separate VTP Polhamus instance — see README_lift_curve_slope.md)
+# Sum wing + tail lift slopes for Nz constraint
+model.add_subsystem('cl_alpha_sum', om.ExecComp(
+    'CL_alpha_total = wing_CL_alpha + CL_alpha_tail'), promotes=['*'])
+model.add_subsystem('long_load', LongitudinalLoadFactor(), promotes_inputs=[
+    ('CL_alpha', 'CL_alpha_total'), 'alpha_max_deg', 'dynamic_pressure',
+    'wing_ref_area', 'aircraft_mass',
+], promotes_outputs=['*'])
 ```

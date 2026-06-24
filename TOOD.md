@@ -1,5 +1,54 @@
 # TODO
 
+## Tail parasite drag - general integration via TailGeometryGroup <span style="color: #22c55e; font-weight: bold">[DONE - v1.38.0 formal tail_drag_* pair active]</span>
+
+`RoskamMissionAeroGroup` now receives tail parasite-drag geometry through the
+formal `tail_drag_*` contract exposed by `TailGeometryGroup`.
+
+Current implementation:
+
+1. **[DONE - v1.38.0] `TailGeometryGroup` owns the required drag inputs** - each
+   backend exposes the two drag-relevant outputs currently needed by the Roskam
+   parasite build-up:
+
+   ```
+   tail_drag_wetted_area              # true wetted area for skin friction
+   tail_drag_characteristic_length    # MAC of the physical panel
+   tail_drag_interference_factor      # tail layout/junction drag multiplier
+   ```
+
+2. **[DONE - v1.39.4] `_GeomArrayAssembler` in `RoskamMissionAeroGroup`** reads
+   those variables instead of the ad-hoc `tail_physical_wetted_area` +
+   `tail_panel_avg_chord` pair, and uses live `wing_c_mac` for the wing
+   Reynolds-number length.  Tail parasite drag applies
+   `tail_drag_interference_factor` without the fuselage `R_wf` multiplier.
+   The tail wetted area is exposed skin only; panel area buried in the fuselage
+   is removed.
+
+3. **[DONE - v1.38.0] `RoskamAeroBuilder.get_parameters`** lists
+   `tail_drag_wetted_area` and `tail_drag_characteristic_length` as trajectory
+   parameters.
+
+For the current X-tail backend:
+
+```
+tail_drag_wetted_area = tail_physical_wetted_area
+tail_drag_characteristic_length = (2/3) * c_root * (1 + lambda + lambda^2) / (1 + lambda)
+tail_drag_interference_factor = 1.04
+tail_fuselage_cutout_area = N_panels * K_tail * (t/c)_tail * c_root^2
+```
+
+This keeps all lifting-surface parasite-drag characteristic lengths on the same
+MAC convention while giving future tail backends a stable parasite-drag API.
+`tail_fuselage_cutout_area` is subtracted from fuselage wetted area by the same
+component that subtracts the wing airfoil cutouts.
+
+Future optional expansion: if the parasite drag model later needs tail-owned t/c,
+sweep, or fineness metadata, add `tail_drag_thickness_to_chord`,
+`tail_drag_sweep`, and `tail_drag_fineness` to the same contract.
+
+---
+
 ## CyBetaFuselage <span style="color: #ef4444; font-weight: bold">[TODO]</span> — proper implementation required
 
 `CyBetaFuselage` exists in `cy_beta_vtp.py` but is **not wired into `LateralLoadFactor`**.
@@ -784,31 +833,155 @@ Steps:
 
 ---
 
-## Tail geometry <span style="color: #ef4444; font-weight: bold">[TODO]</span> — complete empennage geometry for HTP and VTP
+## Tail geometry <span style="color: #f59e0b; font-weight: bold">[PARTIAL - v1.36.0 tail mass properties active; moment arms/backend migration TODO]</span> - configurable tail geometry boundary
 
-`HTailGeometry` computes VTP area and AR from VTP span.  A complete tail geometry
-component covering the full empennage is missing.
+`TailGeometryGroup` in `aviary/subsystems/geometry/spajeti_based/tail_geometry.py`
+is now the public tail geometry boundary for the horizontal-small-UAV model.  The
+current backend is `XTailGeometry` with `TAIL_TYPE = 'x_tail'`.
 
-Steps:
+Current implementation:
 
-1. **HTP geometry** — compute HTP MAC, moment arm (`l_h = x_HTP_ac - x_cg`),
-   and volume coefficient `V_h = S_h * l_h / (S * MAC_wing)`.
+- **[DONE - v1.35.0] Backend selection boundary** - `TailGeometryGroup(tail_type=TAIL_TYPE)`
+  selects a layout-specific backend while promoting a stable downstream API.
+- **[DONE - v1.35.0] X-tail backend** - `XTailGeometry` computes true physical
+  panel geometry and horizontal/vertical aerodynamic-equivalent geometry.
+- **[DONE - v1.35.0] Physical/aero split**:
+  - `tail_physical_*` outputs describe true material geometry for mass, inertia,
+    wetted area, and future visualization.
+  - `tail_aero_*` outputs describe equivalent surfaces for stability/control/aero.
+  - `tail_vertical_*`, `tail_horizontal_*`, and `vtp_*` remain compatibility aliases
+    for the current Roskam lateral-stability path.
+- **[DONE - v1.35.0] X-tail projection model** - equivalent aero areas use squared
+  direction-cosine projection:
+  `S_vertical = S_physical * sin(cant)^2`,
+  `S_horizontal = S_physical * cos(cant)^2`.
+- **[DONE - v1.35.0] Tail physical mass source** - `tail_areal_density` is an input
+  and `tail_physical_structural_mass` is computed inside the geometry boundary.
+- **[DONE - v1.36.0] Tail physical CG** - `XTailGeometry` now publishes
+  `tail_physical_x_cg`, `tail_physical_z_cg`, and panel-equivalent centroid
+  offsets. `VTPStructuralMass` maps those outputs to legacy `vtp_x_cg` and
+  `vtp_z_cg`.
+- **[DONE - v1.36.0] Tail physical inertia equivalents** - `XTailGeometry` now
+  publishes `tail_physical_tip_mass_equivalent`,
+  `tail_physical_tip_pitch_inertia_equivalent`, and
+  `tail_physical_dx_to_elastic_axis`. `VTPTipInertia` maps those outputs to the
+  legacy `aeroelasticity:vtp_*` spanwise mass/inertia API.
+- **[DONE - v1.39.0] Tail volume coefficient data** - `XTailGeometry` now
+  publishes `tail_aero_center_x`, `tail_aero_horizontal_moment_arm`,
+  `tail_aero_vertical_moment_arm`, `tail_aero_horizontal_volume_coefficient`,
+  and `tail_aero_vertical_volume_coefficient`.
 
-2. **VTP geometry** — extend to include VTP moment arm `l_v = x_VTP_ac - x_cg`
-   and volume coefficient `V_v = S_v * l_v / (S * b)`.
+Remaining steps:
 
-3. **H-tail specifics** — for the twin-VTP layout, `S_v` is the total area of
-   both VTPs; `l_v` is measured to their combined aerodynamic centre.
+1. **Connect volume reference CG** - `tail_volume_reference_x_cg` currently uses
+   an independent default to avoid a geometry -> mass -> geometry cycle.  When a
+   static-margin/CG loop is added, connect it to the converged aircraft CG.
 
-4. **Wire CG** — both moment arms depend on CG x-position; connect to the CG
-   estimation component.
+2. **Future backend: H-tail** - add an `h_tail` backend that can reuse the well-tested
+   wing/lifting-surface style geometry for horizontal surfaces while preserving the
+   same `tail_physical_*` and `tail_aero_*` API.
+
+3. **Migrate aero consumers** - gradually move Roskam lateral-stability connections
+   from compatibility aliases (`vtp_*`, `tail_vertical_*`) to explicit
+   `tail_aero_*` inputs.
+
+---
+
+## Tail validation <span style="color: #22c55e; font-weight: bold">[DONE — v1.37.0]</span> — verify aero accounting before moving to stability derivatives
+
+25 pytest tests pass in
+`aviary/subsystems/aerodynamics/SpaJeti_based/test/test_tail_validation.py`.
+
+Before adding moment-based stability derivatives (`Cn_beta`, `Cm_alpha`, static margin),
+confirm that the existing lift/drag/load-factor path is physically consistent for the
+cant-angle tail architecture.
+
+### 1. Cant angle sweep test <span style="color: #22c55e; font-weight: bold">[DONE]</span>
+
+`TailCantRotation` tested at φ ∈ {0°, 30°, 45°, 60°, 90°} with N=4,
+CL_alpha_panel=1.72/rad, S_panel=0.08 m², S_ref=0.45 m².
+
+**Check A — endpoints verified:**
+
+| φ | CY_beta_tail | CL_alpha_tail |
+|---|-------------|---------------|
+| 0° | 0.0 | +1.2213 /rad |
+| 90° | −1.2213 /rad | 0.0 |
+| 45° | −0.6107 /rad | +0.6107 /rad |
+
+**Check B — authority invariant confirmed:**
+`−CY_beta_tail + CL_alpha_tail = authority = 1.2213 /rad` holds at all five φ.
+
+**Check C — gradients verified:**
+`check_partials(method='cs')` passes at φ=0°, 45°, 90° (`assert_check_partials`
+atol=1e-8, rtol=1e-6).
+
+### 2. Mission drag completeness audit <span style="color: #22c55e; font-weight: bold">[GAP 1 accepted / GAP 2 FIXED v1.38.0]</span>
+
+From reading `roskam_aero_group.py`, the current mission `CD` path is:
+
+```
+CD = CD0 + CDI + CDI_fus
+```
+
+| Term | Source | Tail included? |
+|------|--------|----------------|
+| CD0 (parasite) | `RoskamParasiteDragBuildUp` - `tail_drag_wetted_area` + `tail_drag_characteristic_length` | **YES** (component kind 'vtp') |
+| CDI (wing induced) | `_RoskamMissionInducedDrag` — `CL²/(π × AR_geo × e_span)` | Wing only — **tail CDi MISSING** |
+| CDI_fus (fuselage lift-induced) | `_FuselageMissionLiftDrag` — Roskam Eq. 4.33 | Fuselage body only |
+
+**Gap 1 — Tail induced drag not in mission polar (accepted).**
+At cruise CL ≈ 0.03 this is negligible.  At Nz constraint CL ≈ 1.41 the
+omission is ~1.3% of total CDI.  Accepted as a conservative underestimate.
+Regression guard: `test_mission_induced_drag_gap_documented` asserts `CDI_tail`
+is absent and will fail loudly if the gap is silently filled.
+
+**Gap 2 — FIXED in v1.38.0.**
+`_FuselageMissionLiftDrag` now uses `CL_alpha_total` (wing + tail) for alpha,
+replacing the old `wing_CL_alpha`-only path.  At φ=45° this corrects alpha by
+~12%, reducing CDI_fus overestimate by ~25–40%.  The regression guard
+`test_fuselage_alpha_uses_cl_alpha_total` now asserts `CL_alpha_total` is used.
+
+### 3. Swet convention for VTP panels <span style="color: #22c55e; font-weight: bold">[DONE]</span>
+
+`tail_physical_wetted_area = 2.0 * N * panel_area` confirmed in
+`XTailGeometry.compute()` and asserted in `test_swet_equals_two_n_s_panel`.
+Cant-angle invariance confirmed across φ ∈ {0°, 30°, 45°, 60°, 90°} by
+`test_swet_cant_angle_invariant`.
+
+### 4. Physical panel AR reaches Polhamus <span style="color: #22c55e; font-weight: bold">[DONE]</span>
+
+`run_horizontal_small_uav.py` line 390 maps `('surface_ar', 'tail_panel_ar')`.
+`test_vtp_surface_wires_physical_panel_ar` checks the run script text and
+asserts `tail_aero_vertical_ar` is absent from the VTPSurface block.
+`test_panel_ar_uses_physical_span` asserts `tail_panel_ar = b_panel² / S_panel`.
+
+### 5. Nz and Ny sign and magnitude smoke test <span style="color: #22c55e; font-weight: bold">[DONE]</span>
+
+`test_cy_beta_negative_cl_alpha_positive_at_design_point` confirms
+CY_beta_tail < 0 (restoring) and CL_alpha_tail > 0 at φ=45°.
+`test_cl_alpha_tail_adds_to_wing` confirms CL_alpha_total > wing_CL_alpha.
+`test_authority_numerical_value` cross-checks the hand-computed UAV values.
+
+### 6. Polhamus validity at low AR <span style="color: #22c55e; font-weight: bold">[FIXED v1.38.0]</span>
+
+`LiftCurveSlopePolhamus` now uses a tanh-based Helmbold-Polhamus blend:
+at AR ≤ 2 the sweep term in the radical is removed (Helmbold); at AR ≥ 4 the
+full Polhamus formula (with sweep) is used; in between there is a smooth cosine-
+like transition centred at AR = 3.  The stale `AR < 2` warning was replaced by
+an `AR < 0.5` slender-body warning.
+
+`test_polhamus_low_ar_operating_range` still asserts panel AR ∈ [0.5, 4.0) as
+a range guard; at AR = 1.2 the blend weight is w_H ≈ 0.999 so the formula is
+functionally pure Helmbold.
 
 ---
 
 ## Tail sizing <span style="color: #ef4444; font-weight: bold">[TODO]</span> — volume coefficient method for HTP and VTP
 
-Neither the HTP nor the VTP is sized by a volume coefficient requirement.
-Only a lower bound on VTP span is imposed (0.15 m).
+The tail geometry module now publishes `tail_aero_horizontal_volume_coefficient`
+and `tail_aero_vertical_volume_coefficient`, but neither is an optimizer
+constraint yet. Only a lower bound on VTP span is imposed (0.15 m).
 
 Steps:
 
@@ -823,7 +996,9 @@ Steps:
 3. **Trade study** — show how volume coefficient requirements change optimal VTP
    span and compare against the current Ny-only constraint.
 
-4. **Prerequisite** — requires tail geometry (moment arms) and CG estimation.
+4. **Prerequisite / current state** — tail geometry volume-coefficient data exists
+   as of v1.39.0. Before using it as a hard constraint, connect
+   `tail_volume_reference_x_cg` to the converged aircraft CG or static-margin loop.
 
 ---
 
@@ -891,29 +1066,22 @@ Steps:
    ISA 5000m air density, and `V_dive = 1.25 * V_design` as required speed.
 
 Remaining gaps:
-- `aircraft:vertical_tail:mass_scaler = 0.0` in CSV means FLOPS outputs 0 kg VTP mass.
-  `VTPTipInertia` receives 0 kg → flutter analysis ignores VTP tip inertia (unconservative).
-  Fix: expose `aeroelasticity:vtp_mass` as a separate user input in VTPTipInertia so the
-  FLOPS variable name conflict is avoided.
+- **[DONE - v1.35.0] Tail physical mass handoff** - `VTPTipInertia` now consumes
+  `tail_physical_structural_mass` from `TailGeometryGroup` instead of relying on
+  the FLOPS vertical-tail mass path.  This removes the old zero-mass issue caused
+  by `aircraft:vertical_tail:mass_scaler = 0.0` in the CSV.
+- **[DONE - v1.35.0] Cross-module tail mass consistency** - SpaJeti mass and
+  aeroelastic VTP tip inertia now share `tail_physical_structural_mass` as the
+  single promoted physical tail mass source.  The full horizontal-small-UAV smoke
+  test showed matching values for `tail_physical_structural_mass`,
+  `vtp_structural_mass`, and `aeroelasticity:vtp_tip_mass`.
 - Structural stiffness now uses `aeroelasticity:structural_thickness_to_chord`,
   connected from live `wing_section_tc`.  Next validation step: check the `EI`,
   `GJ`, divergence, and flutter response as `wing_section_tc` moves during
   optimization.
-
-- **[TODO] Cross-module VTP mass/inertia consistency** — `VTPStructuralMass`
-  (spajeti_based) and `VTPTipInertia` (aeroelasticity module) are both driven by
-  the same geometry variables but live in separate, sibling subsystems. Verify:
-  - Both use the same inputs: `Aircraft.VerticalTail.SPAN/ROOT_CHORD/TAPER_RATIO`,
-    `AE.VTP_AREAL_DENSITY`, `AE.VTP_TIP_PANEL_COUNT`.
-  - `VTPStructuralMass.vtp_structural_mass / num_wing_tips` ≈ `VTPTipInertia.vtp_tip_mass`
-    (single-tip mass should agree within the trapezoid vs. solid-area formula
-    difference; any divergence > 5% indicates a definition mismatch).
-  - At the optimized geometry, `vtp_structural_mass` flows into `SpaJetiCGEstimator`
-    AND the same geometry flows into `VTPTipInertia` → `SpanwiseMassDistribution`
-    → beam modal solver.  There is no explicit connect between the two subsystem
-    groups; they share promoted variable names at model scope.  Add an end-to-end
-    regression test that checks both outputs move identically when
-    `VerticalTail.SPAN` changes.
+- **[DONE - v1.36.0] Tail inertia generalization** - `TailGeometryGroup` now owns
+  the centroid/inertia-equivalent outputs, and `VTPTipInertia` maps those values
+  into the existing aeroelastic VTP API.
 
 ---
 
@@ -1061,10 +1229,15 @@ Calibration decisions intentionally deferred to Step 5:
 ### Step 5 - H-wing-specific flutter refinements <span style="color: #f59e0b; font-weight: bold">[IN PROGRESS - v1.28.0 VTP inertia, v1.29.0 3-DOF control surface]</span>
 
 - DONE (v1.28.0): model the upper/lower VTP panels as geometry-derived
-  tip/endplate mass and inertia for each half-wing. `VTPTipInertia` computes
+  tip/endplate mass and inertia for each half-wing. `VTPTipInertia` computed
   `vtp_tip_mass` and `vtp_tip_pitch_inertia` from VTP span, root chord, taper,
-  sweep, chordwise CG, root LE offset, and `vtp_areal_density`; these values now
-  feed `SpanwiseMassDistribution` and therefore the beam modes.
+  sweep, chordwise CG, root LE offset, and `vtp_areal_density`. Superseded in
+  v1.36.0 by tail-geometry-owned mass-property outputs.
+
+- DONE (v1.36.0): move the shape-specific tail mass-property calculation into
+  `TailGeometryGroup`. `VTPTipInertia` now maps `tail_physical_tip_mass_equivalent`,
+  `tail_physical_tip_pitch_inertia_equivalent`, and related tail physical offsets
+  into the existing `aeroelasticity:vtp_*` API.
 
 - DONE (v1.29.0): extend `BeamModalFlutter` from 2-mode [bending, torsion] to
   3-mode [bending, torsion, control rotation]:
@@ -1173,29 +1346,22 @@ Frame: x positive FORWARD, nose at origin (x=0), z positive DOWN.
   turbojet-sized aft base all propagate automatically through
   `SuperellipseFuselageGeometry` before mass is evaluated.
 
-### Tail <span style="color: #f59e0b; font-weight: bold">[PARTIAL — mass done, CG TODO]</span>
+### Tail <span style="color: #22c55e; font-weight: bold">[DONE - v1.36.0 physical mass, CG, and inertia equivalents owned by geometry]</span>
 
-`TailStructuralMass` in `tail_structural_mass.py`.
+Tail mass is now owned by the tail geometry boundary rather than a separate
+area-summing mass component.
 
-- Inputs: `Aircraft.HorizontalTail.AREA`, `Aircraft.VerticalTail.AREA`,
-  `htp_areal_density = 1.2 kg/m²`, `vtp_areal_density = 1.2 kg/m²`.
-- Outputs: `htp_structural_mass`, `vtp_structural_mass`, `tail_structural_mass` [kg].
-- **[TODO] Tail CG** — requires HTP/VTP x-station from moment arm (tail geometry
-  module). Once available, add `htp_x_cg`, `vtp_x_cg` outputs and wire into
-  `SpaJetiCGEstimator`.  Tail mass is currently NOT included in `aircraft_empty_mass`
-  because no tail CG x-station is known.
-
-### VTP (H-wing endplates) <span style="color: #22c55e; font-weight: bold">[DONE — v1.33.0]</span>
-
-`VTPStructuralMass` component in `spajeti_based/vtp_structural_mass.py`:
-- Uses same geometry inputs as `VTPTipInertia`: `Aircraft.VerticalTail.SPAN/ROOT_CHORD/TAPER_RATIO`,
-  `AE.VTP_AREAL_DENSITY`, `AE.VTP_TIP_PANEL_COUNT`.
-- `total_vtp_mass = panel_area × density × panel_count × num_wing_tips (=2)`
-- `x_cg = wing_tip_le_x − box_mid_frac × vtp_mac` (responds to SPAN optimizer DV)
-- `z_cg = wing_z_apex` (symmetric up/down panels cancel)
-- Wired into `SpaJetiCGEstimator` and `structural_mass_sum`.
-- `TailStructuralMass.vtp_structural_mass` renamed to `vtp_area_mass` at group scope
-  to avoid output ambiguity.
+- `TailGeometryGroup` / `XTailGeometry` computes `tail_physical_structural_mass`
+  from `tail_physical_total_area * tail_areal_density`.
+- `SpaJetiMassGroup` consumes `tail_physical_structural_mass` directly and maps it
+  to the current `vtp_structural_mass` compatibility output used by structural
+  empty mass and CG bookkeeping.
+- `VTPStructuralMass` no longer recomputes mass from VTP area; it uses the shared
+  physical tail mass source and tail-geometry-owned `tail_physical_x_cg/z_cg`.
+- `VTPTipInertia` consumes `tail_physical_tip_mass_equivalent`,
+  `tail_physical_tip_pitch_inertia_equivalent`, and
+  `tail_physical_dx_to_elastic_axis`, so aeroelastic inertia now starts from the
+  same geometry-owned physical tail properties.
 
 ### Propulsion system (engine location) <span style="color: #22c55e; font-weight: bold">[DONE — v1.33.0]</span>
 
@@ -1277,7 +1443,7 @@ Current horizontal-small-UAV smoke value with ellipsoid nose and turbojet-sized
 aft base: `fuselage_structural_mass ~= 3.777 kg`. The focused geometry+mass
 pytest run has 16 passing tests.
 
-Partial derivative strategy: `WingStructuralMass`, `TailStructuralMass`,
+Partial derivative strategy: `WingStructuralMass`, `TailGeometryGroup`,
 `VTPStructuralMass`, `PropulsionLocationComp`, and `SpaJetiCGEstimator` now
 preserve complex-step perturbations and declare only true dependencies.
 `FuselageStructuralMass` also uses simple declared partials now that the shape
@@ -1324,7 +1490,7 @@ in v1.33.1. Before trusting optimizer gradients through this path:
   smoke checks pass for `VTPStructuralMass` and `PropulsionLocationComp` after
   fixing complex-step input handling and narrowing partial declarations.
   Remaining: derivative checks for `WingStructuralMass`, `FuselageStructuralMass`,
-  `TailStructuralMass`, and `SpaJetiCGEstimator` once their FD/CS strategy is
+  `TailGeometryGroup`, and `SpaJetiCGEstimator` once their FD/CS strategy is
   finalized.
 
 ### Double-check aeroelasticity module
@@ -1444,37 +1610,96 @@ The 3-DOF beam-modal P-K model has not yet been calibrated against reference dat
   - Spanwise/beam-modal aeroelastic pytest subset: 23 passed.
   - Flutter-switch builder pytest: 2 passed.
 
-The optimizer uses SLSQP with analytic derivatives from OpenMDAO CS partials.
+The optimizer uses IPOPT with analytic derivatives from OpenMDAO CS partials.
 
-- **[TODO] Long optimization runtime investigation** — the v1.33.0 full optimization
-  reached IPOPT but hit a 20-minute command timeout. The setup spent about
-  **601 s computing total-derivative sparsity/coloring** before IPOPT began, then
-  only reached iteration 2 before the timeout. Investigate:
-  - Whether dynamic coloring is being recomputed every run and should be cached.
-  - Whether total derivative coloring tolerance/settings are too expensive.
-  - Which subsystem dominates derivative cost (`AeroelasticityGroup`,
-    `SpaJetiMassGroup`, mission phases, or dashboard/recorder hooks).
-  - Whether a cheaper validation mode is needed: no optimization, no dashboard,
-    fixed coloring, or reduced phase transcription.
-  - Whether any CS partials or solver groups force dense/slow total derivatives.
+- <span style="color: #22c55e; font-weight: bold">[DONE]</span> **Long optimization runtime investigation** — the v1.33.0 full
+  optimization spent **601 s computing total-derivative sparsity/coloring** before
+  IPOPT began.  Root cause and fixes implemented:
 
-- **[TODO] check_totals() at baseline** — call `prob.check_totals(method='cs',
-  compact_print=True)` after a single-point solve (no optimization). All
-  constraint/objective total derivatives must have relative error < 1e-4. Focus on:
-  - `BEAM_MODAL_3DOF_PK_FLUTTER_SPEED_MARGIN` w.r.t. `Aircraft.Wing.SPAN` and
-    `wing_section_tc` (drive the active flutter constraint gradient).
-  - `structural_empty_mass` w.r.t. `Aircraft.Wing.SPAN` (mass–span coupling).
-  - `vtp_structural_mass` w.r.t. `Aircraft.VerticalTail.SPAN`.
+  **Root cause:** `BeamModalFlutter.compute()` with default settings (80 speed samples,
+  30 P-K iterations per speed, 2-DOF + 3-DOF loops) dominated the per-evaluation cost.
+  OpenMDAO's dynamic total Jacobian coloring runs O(n_colors) `run_model()` evaluations
+  to discover the sparsity structure.  Furthermore, the `OUTPUT_DIR` was wiped at the
+  start of each run, destroying any cached coloring and forcing recomputation every time.
 
-- **[TODO] Bounds sensitivity** — repeat `check_totals()` with DVs at lower
-  bounds and upper bounds separately. A relative error jump > 10× vs. the
-  interior baseline indicates a near-discontinuity in a compute method.
+  **Fix 1 — Reduced BeamModalFlutter resolution for optimization** (`v1.35`):
+  `AEROELASTIC_SPEED_SAMPLES = 20` (was 80) and `AEROELASTIC_PK_ITERATIONS = 15`
+  (was 30) reduce the per-evaluation compute cost by ~8×.  The initial flutter-search
+  bracket widens proportionally but `AEROELASTIC_BISECTION_ITER = 32` (unchanged)
+  converges the bisection to 2⁻³² relative accuracy, so flutter speed precision is
+  unaffected.  New options are declared on `AeroelasticityGroup` and forwarded to
+  `BeamModalFlutter()`; `AeroelasticityBuilder` also accepts them.  Expected coloring
+  time with `beam_modal_3dof_pk` active: ~75–100 s (vs. 601 s).
 
-- **[TODO] P-K solver differentiability** — confirm the P-K eigenvalue iteration
-  in `BeamModalFlutter` has no floor/ceil/abs operations without CS-safe wrappers.
-  Any such operation returns zero derivative under complex step. Add
-  `np.where(condition, cs_safe_true, cs_safe_false)` guards where needed.
+  **Fix 2 — Total Jacobian coloring cache** (`USE_COLORING_CACHE = True` in config):
+  `optimization_setup.configure_optimization()` checks for a saved coloring file at
+  `OUTPUT_ROOT/<run_name>_coloring.pkl` (outside `OUTPUT_DIR` so it survives directory
+  wipes).  On first run, `declare_coloring()` is called and the computed coloring is
+  saved by `save_coloring_cache(prob)` (called in `main()` immediately after
+  `run_aviary_problem()`).  Subsequent runs load the fixed coloring and skip sparsity
+  computation entirely (~0 s startup overhead).
 
-- **[TODO] NaN/Inf guard** — after the first optimization iteration, scan all
-  component outputs for NaN or Inf. Run `prob.check_partials(compact_print=False)`
-  to surface any component returning NaN during the complex-step perturbation.
+  **Fix 3 — Component timing profiler** (diagnostic):
+  `gradient_checks.profile_component_timing(prob)` times each `ExplicitComponent`'s
+  `compute()` to identify the dominant subsystem.  CLI: `--profile` flag.
+
+- <span style="color: #22c55e; font-weight: bold">[DONE]</span> **check_totals() at baseline** and **Bounds sensitivity** —
+  `aviary/models/aircraft/horizontal_small_uav/gradient_checks.py` implements
+  both checks in one module.
+
+  **check_totals() at baseline** (`RUN_CHECK_TOTALS = True` in config, or CLI default):
+  - Builds the full SpaJeti problem, calls `run_model()` at the interior DV
+    mid-point, then calls `prob.check_totals(method='cs', compact_print=True)`.
+  - Focused scope: `of` = `{BEAM_MODAL_3DOF_PK_FLUTTER_SPEED_MARGIN,
+    DIVERGENCE_SPEED_MARGIN, structural_empty_mass, vtp_structural_mass,
+    fuel_budget_margin, Nz, Ny, mach_crit_margin}`;
+    `wrt` = `{Wing.SPAN, Wing.AREA, VerticalTail.SPAN, wing_section_tc}`.
+  - Prints PASS / WARN / FAIL per (of, wrt) pair with threshold 1e-4.
+
+  **Bounds sensitivity** (`RUN_BOUNDS_SENSITIVITY = True`, or `--all` CLI flag):
+  - Repeats check_totals() at lower bounds AND upper bounds after the interior run.
+  - Computes ratio = bound_err / interior_err per derivative pair.
+  - A ratio > 10× is flagged with `*** DISCONTINUITY SUSPECTED ***` and an
+    `ACTION` message listing which compute() ops to inspect.
+
+  **Flags** (in `horizontal_small_uav_config.py`, both default False):
+  - `RUN_CHECK_TOTALS = True` — interior-only, triggered at end of `main()`.
+  - `RUN_BOUNDS_SENSITIVITY = True` — also runs lower and upper.
+
+  **CLI** (no optimizer license required — uses `run_model()` only):
+  ```
+  python -m aviary.models.aircraft.horizontal_small_uav.gradient_checks
+  python -m aviary.models.aircraft.horizontal_small_uav.gradient_checks --all
+  python -m aviary.models.aircraft.horizontal_small_uav.gradient_checks --lower
+  python -m aviary.models.aircraft.horizontal_small_uav.gradient_checks --upper --method fd
+  ```
+
+- <span style="color: #22c55e; font-weight: bold">[DONE]</span> **P-K solver differentiability** — all CS-breaking `abs()` calls replaced
+  with `np.sqrt(x**2)` and `(a-b)**2 < tol**2` convergence guards throughout
+  `beam_modal_flutter.py` and `pk_flutter.py`:
+  - `_modal_frequency_and_damping`: `abs(eigval.imag)` → `np.sqrt(eigval.imag**2)`
+  - `_bending_mode_fe` / `_torsion_mode_fe`: tip-normalization guard uses `x**2 > 1e-24`
+    instead of `abs(x) > 1e-12`; fallback uses `np.sqrt(np.max(bending**2))`.
+  - `beam_modal_pk_state_matrix`: `abs(k)` → `np.sqrt(k**2)`.
+  - Both P-K iteration loops (2-DOF and N-DOF): `argmin(abs(abs(imag)-target))`
+    → `argmin((imag-target)**2)`; `abs(imag)*b_ref` → `np.sqrt(imag**2)*b_ref`;
+    convergence check `abs(dk)<tol` → `dk**2 < tol**2`.
+  - `pk_flutter.build_structural_matrices`: `max(x, 1e-12)` replaced with
+    `np.where(np.real(x) >= 1e-12, x, 1e-12)` so CS imaginary part survives
+    the guard (fixes `test_pk_helpers_preserve_complex_step_perturbations`).
+  - All 30 beam-modal + P-K tests pass after changes.
+  - **Residual limitation**: structural-mode eigenvalues (`eigh`) are computed
+    from real matrices; derivatives of modal frequencies w.r.t. EI/GJ require
+    eigenvector-sensitivity (`φᵀ(dK-λdM)φ`) which is not implemented. FD
+    partials (`method='fd'`) therefore give approximate but finite derivatives.
+    For the flutter speed (bisection result) both FD and CS give approximate
+    gradients; this is inherent to the non-smooth flutter-boundary problem.
+
+- <span style="color: #22c55e; font-weight: bold">[DONE]</span> **NaN/Inf guard** — `check_nan_inf_outputs(prob)` added to
+  `aviary/models/aircraft/reporting/printing_utils.py`. Scans every promoted
+  model output via `list_outputs(val=True)`, flags any NaN or Inf with the
+  component absolute path, promoted name, and offending values. Prints an
+  `ACTION` reminder to call `prob.check_partials(compact_print=False)` when
+  problems are found. Activated by `PRINT_NAN_INF_GUARD = True` in
+  `horizontal_small_uav_config.py` (default False). Call is inserted in
+  `run_horizontal_small_uav.main()` immediately after `run_aviary_problem()`.

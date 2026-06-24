@@ -64,7 +64,9 @@ def _bending_mode_fe(y, EI, mass):
     mode = np.zeros(ndof)
     mode[free] = mode_free
     bending = mode[0::2]
-    tip = bending[-1] if abs(bending[-1]) > 1.0e-12 else np.max(np.abs(bending))
+    # Use x**2 > threshold**2 instead of abs(x) > threshold: same logical result
+    # for real values but no abs() that would zero the CS derivative at the kink.
+    tip = bending[-1] if bending[-1] ** 2 > 1.0e-24 else np.sqrt(np.max(bending ** 2))
     bending = bending / tip
     return eigval, bending
 
@@ -92,7 +94,7 @@ def _torsion_mode_fe(y, GJ, pitch_inertia):
     )
     torsion = np.zeros(n)
     torsion[free] = mode_free
-    tip = torsion[-1] if abs(torsion[-1]) > 1.0e-12 else np.max(np.abs(torsion))
+    tip = torsion[-1] if torsion[-1] ** 2 > 1.0e-24 else np.sqrt(np.max(torsion ** 2))
     torsion = torsion / tip
     return eigval, torsion
 
@@ -406,7 +408,7 @@ def beam_modal_pk_state_matrix(
     """Build a real 2-mode P-K state matrix for one reduced-frequency iterate."""
     q_dyn = 0.5 * rho * speed**2
     b_ref = max(0.5 * ref_chord, 1.0e-12)
-    omega = max(abs(reduced_frequency) * max(speed, 1.0e-6) / b_ref, 1.0e-8)
+    omega = max(np.sqrt(reduced_frequency ** 2) * max(speed, 1.0e-6) / b_ref, 1.0e-8)
     effective_stiffness = modal_stiffness - q_dyn * q_real
     effective_damping = structural_damping_matrix + q_dyn * q_imag / omega
 
@@ -417,8 +419,10 @@ def beam_modal_pk_state_matrix(
 
 
 def _modal_frequency_and_damping(eigval):
-    omega = abs(eigval.imag)
-    denom = np.sqrt(eigval.real**2 + eigval.imag**2)
+    # np.sqrt(x**2) instead of abs(x): abs() has zero CS derivative at x=0,
+    # while sqrt(x**2) propagates dω/dx correctly under complex step.
+    omega = np.sqrt(eigval.imag ** 2)
+    denom = np.sqrt(eigval.real ** 2 + eigval.imag ** 2)
     damping_ratio = -eigval.real / denom if denom > 0.0 else 1.0
     return omega / (2.0 * np.pi), damping_ratio
 
@@ -481,9 +485,13 @@ def beam_modal_pk_modes_at_speed(
             if len(positive) == 0:
                 positive = eigvals
             target = dry_omega[mode_idx]
-            eigval = positive[np.argmin(np.abs(np.abs(positive.imag) - target))]
-            new_k = max(abs(eigval.imag) * b_ref / speed_safe, 1.0e-6)
-            if abs(new_k - k) < tolerance:
+            # (x - target)**2 replaces abs(abs(x) - target): argmin is identical
+            # for real-valued imag parts but has no nested abs() kinks.
+            eigval = positive[np.argmin((positive.imag - target) ** 2)]
+            # sqrt(x**2) instead of abs(x): CS-safe, propagates derivative correctly.
+            new_k = max(np.sqrt(eigval.imag ** 2) * b_ref / speed_safe, 1.0e-6)
+            # (a-b)**2 < tol**2 is equivalent to abs(a-b) < tol for real a,b.
+            if (new_k - k) ** 2 < tolerance ** 2:
                 k = new_k
                 break
             k = 0.5 * (k + new_k)
@@ -532,7 +540,7 @@ def beam_modal_pk_modes_at_speed_ndof(
         for _ in range(max_iterations):
             q_real, q_imag, _ = gaf_fn(k, *gaf_args)
             q_dyn = 0.5 * rho * speed_safe**2
-            omega = max(abs(k) * speed_safe / b_ref, 1.0e-8)
+            omega = max(np.sqrt(k ** 2) * speed_safe / b_ref, 1.0e-8)
             effective_stiffness = modal_stiffness - q_dyn * q_real
             effective_damping = structural_damping_matrix + q_dyn * q_imag / omega
             inv_m = np.linalg.inv(modal_mass)
@@ -544,16 +552,16 @@ def beam_modal_pk_modes_at_speed_ndof(
             if len(positive) == 0:
                 positive = eigvals
             target = dry_omega[mode_idx]
-            eigval = positive[np.argmin(np.abs(np.abs(positive.imag) - target))]
-            new_k = max(abs(eigval.imag) * b_ref / speed_safe, 1.0e-6)
-            if abs(new_k - k) < tolerance:
+            eigval = positive[np.argmin((positive.imag - target) ** 2)]
+            new_k = max(np.sqrt(eigval.imag ** 2) * b_ref / speed_safe, 1.0e-6)
+            if (new_k - k) ** 2 < tolerance ** 2:
                 k = new_k
                 break
             k = 0.5 * (k + new_k)
         else:
             converged = False
 
-        omega_hz = abs(eigval.imag) / (2.0 * np.pi)
+        omega_hz = np.sqrt(eigval.imag ** 2) / (2.0 * np.pi)
         denom = np.sqrt(eigval.real**2 + eigval.imag**2)
         damp = -eigval.real / denom if denom > 0.0 else 1.0
         frequency[mode_idx] = omega_hz

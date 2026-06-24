@@ -99,9 +99,9 @@ Live w.r.t. wing area DV and wing t/c DV (FLOPS recomputes in pre-mission).
 Swet_VTP = 4 × vtp_area          # 2 panels (L+R wingtip) × 2 sides
 ```
 
-Computed by `vtp_wetted_area_comp` ExecComp at model scope. `vtp_area` is the area of
-one VTP panel (full span from below-wing tip to above-wing tip), computed live by
-`HTailGeometry` from the VTP span design variable.
+Computed by `XTailGeometry` at model scope. `vtp_area` is the vertical-equivalent
+area consumed by the current VTP aerodynamic path, computed live from the tail
+panel geometry and cant angle.
 
 ### Fuselage exposed wetted area  (`FuselageExposedWettedAreaComp`)
 

@@ -23,7 +23,7 @@ WingSurface (LiftingSurfaceGroup)
     Wing: ScholzWingletARCorrection -> Polhamus with K_wf fuselage factor.
 
 VTPSurface (LiftingSurfaceGroup)
-    VTP: raw-AR Polhamus + CyBetaVtp + optional CyDeltaRudder.
+    VTP: physical-panel Polhamus + TailCantRotation (cant-angle decomposition).
 
 Generic internal variable names
 --------------------------------
@@ -41,13 +41,8 @@ names at the call site via the promotes_inputs list of add_subsystem:
     fuselage_diameter -- injected internally from SurfaceConfig (no call-site wiring needed)
 
   VTPSurface only (consumed from model scope, not via generic names):
-    surface_ar   -> 'vtp_ar'    (HTailGeometry plain name)
-    surface_area -> 'vtp_area'  (HTailGeometry plain name)
-    fuselage_vtp_span_ratio, wing_ref_area  (HTailGeometry plain names)
-    Aircraft.HorizontalTail.AREA / ASPECT_RATIO
-    Aircraft.Fuselage.LENGTH
-    Aircraft.VerticalTail.TAPER_RATIO / THICKNESS_TO_CHORD  (for CyDeltaRudder)
-    rudder_cf_c, rudder_eta_root, rudder_eta_tip, delta_r_deg
+    surface_ar   -> 'tail_panel_ar'  (physical panel AR from TailGeometryGroup)
+    wing_ref_area, tail_physical_panel_area, tail_cant_angle, tail_panel_count
 
 Section properties (Group scope only -- NOT promoted to model level by default)
 --------------------------------------------------------------------------------
@@ -80,9 +75,9 @@ Outputs promoted to model scope (listed in call-site promotes_outputs)
     'wing_le_sweep'                 -- leading-edge sweep angle Lambda_LE
 
   VTPSurface:
-    ('surface_CL_alpha', 'CL_alpha_v')
-    'CY_beta_vtp'
-    'CY_delta_r'                    -- only if SurfaceConfig.has_control_surface=True
+    ('surface_CL_alpha', 'CL_alpha_v')  -- physical panel lift slope [/rad]
+    'CY_beta_tail'                      -- body-axis dCY/dbeta [/rad]
+    'CL_alpha_tail'                     -- body-axis dCL/dalpha [/rad]
 """
 
 import openmdao.api as om
@@ -94,7 +89,9 @@ from aviary.subsystems.aerodynamics.SpaJeti_based.lift_curve_slope import (
     ScholzWingletARCorrection,
     LiftCurveSlopePolhamus,
 )
-from aviary.subsystems.aerodynamics.SpaJeti_based.cy_beta_vtp import CyBetaVtp, CyDeltaRudder
+from aviary.subsystems.aerodynamics.SpaJeti_based.cy_beta_vtp import (
+    CyBetaVtp, CyDeltaRudder, TailCantRotation,
+)
 from aviary.subsystems.aerodynamics.SpaJeti_based.mach_critical import MachCriticalComp
 from aviary.subsystems.aerodynamics.SpaJeti_based.surface_geometry import MACGeometryComp
 
@@ -396,62 +393,26 @@ class VTPSurface(LiftingSurfaceGroup):
       ``SurfaceConfig.has_control_surface=True``.
 
     Generic inputs mapped at the call site:
-      ``surface_ar``   -> 'vtp_ar'    (from HTailGeometry -- plain name)
-      ``surface_area`` -> 'vtp_area'  (from HTailGeometry -- plain name)
+      ``surface_ar``       -> 'tail_panel_ar'          (physical panel AR from TailGeometryGroup)
       ``surface_sweep_c4`` -> Aircraft.VerticalTail.SWEEP
+      ``surface_taper``    -> Aircraft.VerticalTail.TAPER_RATIO
 
-    Inputs consumed directly from model scope (promoted as-is through the Group):
-      fuselage_vtp_span_ratio, wing_ref_area    (from HTailGeometry)
-      Aircraft.HorizontalTail.AREA, ASPECT_RATIO
-      Aircraft.Fuselage.LENGTH
-      Aircraft.VerticalTail.TAPER_RATIO, THICKNESS_TO_CHORD  (for CyDeltaRudder)
-      rudder_cf_c, rudder_eta_root, rudder_eta_tip, delta_r_deg
+    Inputs consumed directly from model scope (promoted through the Group):
+      wing_ref_area, tail_physical_panel_area, tail_cant_angle, tail_panel_count
 
     Outputs promoted to model scope (via call-site promotes_outputs):
-      ``('surface_CL_alpha', 'CL_alpha_v')``, ``CY_beta_vtp``, ``CY_delta_r``
-
-    Note on section_tc vs Aircraft.VerticalTail.THICKNESS_TO_CHORD
-    ---------------------------------------------------------------
-    ``section_tc`` (from AirfoilConstantsComp) and
-    ``Aircraft.VerticalTail.THICKNESS_TO_CHORD`` (from the CSV, used by
-    CyDeltaRudder) are separate OpenMDAO variables.  They should be kept
-    consistent when selecting an airfoil -- the CSV value drives FLOPS mass
-    and CyDeltaRudder; the airfoil-data value drives future M_crit and
-    parasite drag components.
+      ``('surface_CL_alpha', 'CL_alpha_v')``, ``CY_beta_tail``, ``CL_alpha_tail``
     """
 
     def _setup_derivatives(self):
-        cfg = self._cfg
-
-        # CyBetaVtp: remap generic surface names to component plain names
         self.add_subsystem(
-            'cy_beta', CyBetaVtp(),
+            'cant_rotation', TailCantRotation(),
             promotes_inputs=[
-                ('vtp_ar',   'surface_ar'),
-                ('vtp_area', 'surface_area'),
-                'fuselage_vtp_span_ratio',
-                Aircraft.VerticalTail.SWEEP,
+                ('CL_alpha_panel', 'surface_CL_alpha'),
+                'tail_physical_panel_area',
+                'tail_cant_angle',
+                'tail_panel_count',
                 'wing_ref_area',
-                Aircraft.HorizontalTail.AREA,
-                Aircraft.HorizontalTail.ASPECT_RATIO,
-                Aircraft.Fuselage.LENGTH,
             ],
-            promotes_outputs=['CY_beta_vtp'],
+            promotes_outputs=['CY_beta_tail', 'CL_alpha_tail'],
         )
-
-        if cfg.has_control_surface:
-            self.add_subsystem(
-                'cy_delta_r', CyDeltaRudder(),
-                promotes_inputs=[
-                    ('vtp_area',   'surface_area'),
-                    Aircraft.VerticalTail.TAPER_RATIO,
-                    Aircraft.VerticalTail.THICKNESS_TO_CHORD,
-                    'wing_ref_area',
-                    ('CL_alpha_v', 'surface_CL_alpha'),
-                    'rudder_cf_c',
-                    'rudder_eta_root',
-                    'rudder_eta_tip',
-                    'delta_r_deg',
-                ],
-                promotes_outputs=['CY_delta_r'],
-            )

@@ -7,13 +7,11 @@ _GRAV = 9.80665  # m/s² standard gravity
 class LateralLoadFactor(om.ExplicitComponent):
     """Side load factor Ny at a fixed design-point flight condition.
 
-    Combines passive stability (VTP CY_beta at sideslip beta) with active
-    rudder authority (CY_delta_r at deflection delta_r) and converts to Ny.
+    Passive tail side-force (CY_beta_tail at sideslip beta) converted to Ny.
     Wing and fuselage contributions are excluded pending full integration:
 
-        CY_beta_total = CY_beta_vtp                         [per rad]
-        CY            = CY_beta_total * beta
-                        + CY_delta_r   * delta_r             [-]
+        CY_beta_total = CY_beta_tail                         [per rad]
+        CY            = CY_beta_total * beta                 [-]
         side_force    = CY * q * S_ref                       [N]
         Ny            = |side_force| / (mass * g)            [-]  (positive magnitude)
 
@@ -33,28 +31,11 @@ class LateralLoadFactor(om.ExplicitComponent):
     """
 
     def setup(self):
-        # Passive side-force slopes — default to zero so the component works
-        # if only a subset of sources is connected.
         self.add_input(
-            'CY_beta_vtp',
+            'CY_beta_tail',
             val=0.0,
             units='unitless',
-            desc='Both-VTP side-force slope from CyBetaVtp (per radian sideslip, ×2 included)',
-        )
-
-        # Active rudder authority
-        self.add_input(
-            'CY_delta_r',
-            val=0.0,
-            units='unitless',
-            desc='Both-rudder side-force effectiveness from CyDeltaRudder '
-                 '(per radian deflection, ×2 included)',
-        )
-        self.add_input(
-            'delta_r_deg',
-            val=0.0,
-            units='deg',
-            desc='Rudder deflection angle at the test condition',
+            desc='Tail side-force slope from TailCantRotation (per radian sideslip)',
         )
 
         # Test condition
@@ -75,7 +56,7 @@ class LateralLoadFactor(om.ExplicitComponent):
             'wing_ref_area',
             val=0.45,
             units='m**2',
-            desc='Wing reference area (from HTailGeometry)',
+            desc='Wing reference area (from tail geometry)',
         )
         self.add_input(
             'aircraft_mass',
@@ -90,7 +71,7 @@ class LateralLoadFactor(om.ExplicitComponent):
             'CY_beta_total',
             val=0.0,
             units='unitless',
-            desc='Total passive side-force slope (VTP only) per radian of sideslip',
+            desc='Total passive side-force slope (tail) per radian of sideslip',
         )
         self.add_output(
             'CY',
@@ -112,8 +93,8 @@ class LateralLoadFactor(om.ExplicitComponent):
         )
 
     def setup_partials(self):
-        cy_inputs = ['CY_beta_vtp']
-        cy_beta_inputs = cy_inputs + ['beta_deg', 'CY_delta_r', 'delta_r_deg']
+        cy_inputs = ['CY_beta_tail']
+        cy_beta_inputs = cy_inputs + ['beta_deg']
         sf_inputs = cy_beta_inputs + ['dynamic_pressure', 'wing_ref_area']
         ny_inputs = sf_inputs + ['aircraft_mass']
 
@@ -123,20 +104,14 @@ class LateralLoadFactor(om.ExplicitComponent):
         self.declare_partials('Ny',            ny_inputs,      method='cs')
 
     def compute(self, inputs, outputs):
-        cy_vtp    = inputs['CY_beta_vtp']
-        cy_dr     = inputs['CY_delta_r']
-        delta_r   = inputs['delta_r_deg']  * (np.pi / 180.0)
-        beta_rad  = inputs['beta_deg']     * (np.pi / 180.0)
-        q         = inputs['dynamic_pressure']
-        s_ref     = inputs['wing_ref_area']
-        mass      = inputs['aircraft_mass']
+        cy_tail  = inputs['CY_beta_tail']
+        beta_rad = inputs['beta_deg'] * (np.pi / 180.0)
+        q        = inputs['dynamic_pressure']
+        s_ref    = inputs['wing_ref_area']
+        mass     = inputs['aircraft_mass']
 
-        cy_beta_total = cy_vtp
-        # Both CY_beta_vtp and CY_delta_r carry the same sign (negative by DATCOM convention:
-        # wind from left → VTPs and rudder both generate force toward the right → CY < 0).
-        # Simply sum the two contributions; positive beta and positive delta_r both give
-        # negative CY, so Ny = -CY*q*S/(m*g) is positive.
-        cy = cy_beta_total * beta_rad + cy_dr * delta_r
+        cy_beta_total = cy_tail
+        cy = cy_beta_total * beta_rad
         side_force = cy * q * s_ref
         ny = -side_force / (mass * _GRAV)   # negate → positive Ny magnitude
 

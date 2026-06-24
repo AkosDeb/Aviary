@@ -1,9 +1,10 @@
 # SpaJeti v1.0.0 — H-wing UAV Range Optimisation
 
-Conceptual fixed-wing UAV: straight wing with twin-VTP H-tail endplates and a small
-turbojet. The layout replaces the conventional single vertical stabilizer with two
-winglet-mounted VTPs that simultaneously provide lateral stability and act as
-endplates, improving the wing's effective aspect ratio.
+Conceptual fixed-wing UAV: straight wing with a configurable tail geometry module
+and a small turbojet. The current model uses an X-tail backend that exposes both
+true physical geometry and horizontal/vertical aerodynamic-equivalent geometry, so
+downstream aero, mass, inertia, and reporting modules can keep a stable API when
+future tail layouts are added.
 
 ---
 
@@ -11,7 +12,7 @@ endplates, improving the wing's effective aspect ratio.
 
 | Parameter | Value |
 |---|---|
-| Layout | Wing + H-tail (twin-VTP endplates) + fuselage pod |
+| Layout | Wing + configurable tail geometry + fuselage pod |
 | Propulsion | Single small turbojet (scaled from regression model) |
 | Gross mass | 15.0 kg (fixed) |
 | Empty mass | 7.0 kg (fixed structural budget) |
@@ -49,7 +50,7 @@ The output directory name is built automatically from `MODEL_VERSION` in
 [horizontal_small_uav_config.py](horizontal_small_uav_config.py) — each version
 writes to its own folder, so old results are never overwritten.
 
-Current version (`v1.33.7`):
+Current version (`v1.39.4`):
 
 ```powershell
 # run
@@ -57,23 +58,23 @@ python aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py
 ```
 
 ```text
-outputs/run_horizontal_small_uav_try_v1_v1.33.7_out/
+outputs/run_horizontal_small_uav_try_v1_v1.39.4_out/
 ```
 
 ### Open dashboard (after opt completes)
 
 ```powershell
-aviary dashboard outputs/run_horizontal_small_uav_try_v1_v1.33.7_out
+aviary dashboard outputs/run_horizontal_small_uav_try_v1_v1.39.4_out
 ```
 
 ### One-liner: run opt then launch dashboard
 
 ```powershell
-python aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py; aviary dashboard outputs/run_horizontal_small_uav_try_v1_v1.33.7_out
+python aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py; aviary dashboard outputs/run_horizontal_small_uav_try_v1_v1.39.4_out
 ```
 
 > **Note:** if `MODEL_VERSION` has changed since this README was written, replace
-> `v1.33.7` with the value of `MODEL_VERSION` in `horizontal_small_uav_config.py`.
+> `v1.39.4` with the value of `MODEL_VERSION` in `horizontal_small_uav_config.py`.
 
 ---
 
@@ -138,7 +139,7 @@ the optimization script starts.
 | Subsystem | Module | Purpose |
 |---|---|---|
 | `SmallTurbojetModel` | `aviary/subsystems/propulsion/small_turbojet` | Regression-based turbojet sizing and SFC |
-| `HTailGeometry` | `aviary/subsystems/geometry/flops_based/htail_geometry.py` | VTP span → area, AR, root chord |
+| `TailGeometryGroup` / `XTailGeometry` | `aviary/subsystems/geometry/spajeti_based/tail_geometry.py` | Selects the active tail backend; current `x_tail` backend publishes physical and aero-equivalent tail outputs |
 | `ScholzWingletARCorrection` | `aviary/subsystems/aerodynamics/SpaJeti_based/lift_curve_slope.py` | Scholz (INCAS 2018) winglet AR correction → AR_eff, k_h |
 | `LiftCurveSlopePolhamus` | `aviary/subsystems/aerodynamics/SpaJeti_based/lift_curve_slope.py` | Wing-alone Polhamus CL_alpha; c_l_alpha computed from t/c via Abbott & von Doenhoff |
 | `CyBetaVtp` / `CyDeltaRudder` | `aviary/subsystems/aerodynamics/SpaJeti_based/cy_beta_vtp.py` | Side-force derivatives for Ny constraint |
@@ -151,9 +152,92 @@ the optimization script starts.
 
 Component-level formulas, I/O tables, and worked examples are in:
 
-- [README_htail_geometry.md](../../geometry/flops_based/README_htail_geometry.md)
 - [README_lift_curve_slope.md](../../aerodynamics/flops_based/README_lift_curve_slope.md)
 - [README_lateral_stability.md](../../aerodynamics/flops_based/README_lateral_stability.md)
+
+---
+
+## Tail Geometry Architecture
+
+The aircraft model adds one promoted tail geometry subsystem:
+
+```python
+TailGeometryGroup(tail_type=TAIL_TYPE)
+```
+
+`TAIL_TYPE` is currently `'x_tail'`, configured in
+[horizontal_small_uav_config.py](horizontal_small_uav_config.py). The group is the
+stable public boundary; layout-specific details live inside the selected backend.
+
+The active X-tail backend separates outputs by use:
+
+| Output family | Meaning | Current consumers |
+|---|---|---|
+| `tail_physical_*` | True material geometry: panel area, total area, wetted area, structural mass, CG, and inertia equivalents | mass, inertia, future visualization |
+| `tail_aero_*` | Horizontal/vertical aerodynamic-equivalent geometry | stability/control/aero modules |
+| `tail_aero_*_volume_coefficient` | Horizontal/vertical tail volume coefficient data | tail sizing diagnostics and future constraints |
+| `tail_drag_*` | Exposed wetted area and physical characteristic length for parasite drag | Roskam/DATCOM parasite drag |
+| `tail_vertical_*`, `tail_horizontal_*`, `vtp_*` | Compatibility aliases | existing Roskam lateral-stability path |
+
+For the X-tail, each real panel is canted from the horizontal plane by
+`tail_cant_angle`. Projected spans use `sin(cant)` and `cos(cant)`, while
+aerodynamic-equivalent areas use the squared projection:
+
+```text
+tail_aero_vertical_area   = tail_physical_total_area * sin(cant)^2
+tail_aero_horizontal_area = tail_physical_total_area * cos(cant)^2
+```
+
+Structural tail mass is computed inside the geometry boundary:
+
+```text
+tail_physical_structural_mass = tail_physical_total_area * tail_areal_density
+```
+
+The same boundary also publishes layout-owned mass-property outputs such as
+`tail_physical_x_cg`, `tail_physical_z_cg`,
+`tail_physical_tip_mass_equivalent`, and
+`tail_physical_tip_pitch_inertia_equivalent`.  The current `VTPStructuralMass`
+and `VTPTipInertia` components are compatibility adapters from these tail-owned
+properties to legacy `vtp_*` and `aeroelasticity:vtp_*` names.
+
+For parasite drag, consumers should use the formal drag contract:
+
+```text
+tail_drag_wetted_area = tail_physical_wetted_area
+tail_drag_characteristic_length = (2/3) * c_root * (1 + lambda + lambda^2) / (1 + lambda)
+tail_drag_interference_factor = 1.04
+```
+
+For the X-tail, `tail_physical_wetted_area` is the exposed panel skin only:
+the fuselage-buried panel area is removed before multiplying by two sides. The
+same geometry publishes `tail_fuselage_cutout_area`, which is subtracted from
+`fuselage_exposed_wetted_area` along with the wing airfoil cutouts.
+
+The wing parasite-drag characteristic length also uses the live trapezoidal MAC
+output `wing_c_mac`, so all lifting-surface Reynolds-number lengths are MACs.
+Tail parasite drag uses the tail layout/endplate factor without the fuselage
+interference factor:
+
+```text
+CD0_tail = Cf * FF * R_LS * tail_drag_interference_factor * Swet_tail / Sref
+```
+
+Tail volume coefficients are also computed as data outputs:
+
+```text
+l_tail = tail_volume_reference_x_cg - tail_aero_center_x
+V_h = tail_aero_horizontal_area * l_tail / (wing_ref_area * wing_MAC)
+V_v = tail_aero_vertical_area * l_tail / (wing_ref_area * wing_span)
+```
+
+`tail_volume_reference_x_cg` defaults independently to avoid a geometry/mass
+cycle in the current model. It can be connected to a converged aircraft CG later
+when static-margin constraints are introduced.
+
+This keeps the mass and aeroelastic models layout-agnostic: changing from X-tail
+to a future H-tail or other backend should preserve the same downstream
+physical/aero API.
 
 ---
 

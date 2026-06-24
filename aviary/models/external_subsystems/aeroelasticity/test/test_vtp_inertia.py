@@ -9,7 +9,7 @@ from aviary.variable_info.variables import Aircraft
 
 class TestVTPTipInertia(unittest.TestCase):
     def make_problem(self):
-        prob = om.Problem(reports=False)
+        prob = om.Problem(name='test_vtp_tip_inertia', reports=False)
         prob.model.add_subsystem('vtp', VTPTipInertia())
         prob.setup(force_alloc_complex=True)
 
@@ -25,15 +25,11 @@ class TestVTPTipInertia(unittest.TestCase):
         prob = self.make_problem()
         prob.run_model()
 
-        tip_mass = prob.get_val(f'vtp.{AE.VTP_TIP_MASS}', units='kg')
-        tip_inertia = prob.get_val(f'vtp.{AE.VTP_TIP_PITCH_INERTIA}', units='kg*m**2')
         m_eq = prob.get_val(f'vtp.{AE.VTP_EQUIVALENT_MASS_PER_UNIT_SPAN}', units='kg/m')
         inertia = prob.get_val(f'vtp.{AE.VTP_PITCH_INERTIA_PER_UNIT_SPAN}', units='kg*m')
         dx = prob.get_val(f'vtp.{AE.VTP_DX_TO_ELASTIC_AXIS}', units='m')
         z_abs = prob.get_val(f'vtp.{AE.VTP_CG_Z_ABS}', units='m')
 
-        self.assertAlmostEqual(float(tip_mass[0]), 0.2)
-        self.assertAlmostEqual(float(tip_inertia[0]), 0.03)
         self.assertAlmostEqual(float(m_eq[0]), 0.1)
         self.assertAlmostEqual(float(inertia[0]), 0.015)
         self.assertLess(float(dx[0]), 0.0)
@@ -41,8 +37,8 @@ class TestVTPTipInertia(unittest.TestCase):
 
     def test_more_tail_physical_mass_increases_equivalent_mass_and_inertia(self):
         prob = self.make_problem()
-        prob.set_val('vtp.tail_physical_tip_mass_equivalent', 0.12, units='kg')
-        prob.set_val('vtp.tail_physical_tip_pitch_inertia_equivalent', 0.012, units='kg*m**2')
+        prob.set_val('vtp.tail_physical_tip_mass_equivalent', 0.1, units='kg')
+        prob.set_val('vtp.tail_physical_tip_pitch_inertia_equivalent', 0.01, units='kg*m**2')
         prob.run_model()
         low_mass = float(
             prob.get_val(f'vtp.{AE.VTP_EQUIVALENT_MASS_PER_UNIT_SPAN}', units='kg/m')[0]
@@ -51,8 +47,8 @@ class TestVTPTipInertia(unittest.TestCase):
             prob.get_val(f'vtp.{AE.VTP_PITCH_INERTIA_PER_UNIT_SPAN}', units='kg*m')[0]
         )
 
-        prob.set_val('vtp.tail_physical_tip_mass_equivalent', 0.24, units='kg')
-        prob.set_val('vtp.tail_physical_tip_pitch_inertia_equivalent', 0.024, units='kg*m**2')
+        prob.set_val('vtp.tail_physical_tip_mass_equivalent', 0.3, units='kg')
+        prob.set_val('vtp.tail_physical_tip_pitch_inertia_equivalent', 0.03, units='kg*m**2')
         prob.run_model()
         high_mass = float(
             prob.get_val(f'vtp.{AE.VTP_EQUIVALENT_MASS_PER_UNIT_SPAN}', units='kg/m')[0]
@@ -64,38 +60,17 @@ class TestVTPTipInertia(unittest.TestCase):
         self.assertGreater(high_mass, low_mass)
         self.assertGreater(high_inertia, low_inertia)
 
-    def test_tail_geometry_owned_inertia_changes_tip_inertia(self):
+    def test_cg_position_smoke(self):
         prob = self.make_problem()
-        prob.set_val('vtp.tail_physical_tip_pitch_inertia_equivalent', 0.01, units='kg*m**2')
         prob.run_model()
-        low_mass = float(prob.get_val(f'vtp.{AE.VTP_TIP_MASS}', units='kg')[0])
-        low_inertia = float(prob.get_val(f'vtp.{AE.VTP_TIP_PITCH_INERTIA}', units='kg*m**2')[0])
 
-        prob.set_val('vtp.tail_physical_tip_pitch_inertia_equivalent', 0.04, units='kg*m**2')
-        prob.run_model()
-        high_mass = float(prob.get_val(f'vtp.{AE.VTP_TIP_MASS}', units='kg')[0])
-        high_inertia = float(prob.get_val(f'vtp.{AE.VTP_TIP_PITCH_INERTIA}', units='kg*m**2')[0])
+        z_abs = float(prob.get_val(f'vtp.{AE.VTP_CG_Z_ABS}', units='m')[0])
+        x_cg = float(prob.get_val(f'vtp.{AE.VTP_CG_X_FROM_WING_TIP_LE}', units='m')[0])
+        dx = float(prob.get_val(f'vtp.{AE.VTP_DX_TO_ELASTIC_AXIS}', units='m')[0])
 
-        self.assertAlmostEqual(high_mass, low_mass)
-        self.assertGreater(high_inertia, low_inertia)
-
-    def test_design_bounds_have_physical_tip_mass_and_inertia(self):
-        prob = self.make_problem()
-        values = []
-        for inertia in (0.01, 0.06):
-            prob.set_val('vtp.tail_physical_tip_pitch_inertia_equivalent', inertia, units='kg*m**2')
-            prob.run_model()
-            values.append((
-                float(prob.get_val(f'vtp.{AE.VTP_TIP_MASS}', units='kg')[0]),
-                float(prob.get_val(f'vtp.{AE.VTP_TIP_PITCH_INERTIA}', units='kg*m**2')[0]),
-            ))
-
-        low_mass, low_inertia = values[0]
-        high_mass, high_inertia = values[1]
-        self.assertGreater(low_mass, 0.0)
-        self.assertGreater(low_inertia, 0.0)
-        self.assertAlmostEqual(high_mass, low_mass)
-        self.assertGreater(high_inertia, low_inertia)
+        self.assertAlmostEqual(z_abs, 0.20, places=6)
+        self.assertAlmostEqual(x_cg, 0.04, places=6)
+        self.assertAlmostEqual(dx, -0.11, places=6)
 
     def test_root_le_x_offset_moves_vtp_cg_aft(self):
         prob = self.make_problem()

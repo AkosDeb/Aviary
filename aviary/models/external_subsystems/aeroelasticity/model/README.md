@@ -29,7 +29,8 @@ flow; this file is a quick map for the model files themselves.
 
 - Adds engine, fuel, servo, elevon, and VTP mass effects onto the spanwise
   structural mass and pitch-inertia arrays.
-- Receives generated VTP tip mass and pitch inertia from `VTPTipInertia`.
+- Receives tail-geometry-owned tip mass and pitch inertia equivalents through
+  the `VTPTipInertia` compatibility adapter.
 - Concentrated masses are distributed numerically onto nearby span stations so
   the optimizer receives smooth enough quantities for screening.
 
@@ -87,12 +88,12 @@ flow; this file is a quick map for the model files themselves.
 
 `vtp_inertia.py`
 
-- Computes VTP mass, pitch inertia, center of gravity, and chordwise offset
-  bookkeeping for H-wing tip-mounted vertical surfaces.
-- Uses the half-wing convention: two mirrored upper/lower panels at one wingtip.
-  Their vertical static offsets cancel, while pitch inertia adds.
-- Computes mass from VTP geometry and `aeroelasticity:vtp_areal_density`, so the
-  beam model responds when VTP span changes in the optimizer.
+- Maps tail-geometry-owned tip mass, pitch inertia, center of gravity, and
+  chordwise offset equivalents into the legacy VTP aeroelastic output names.
+- Uses the existing half-wing convention expected by `SpanwiseMassDistribution`.
+- The shape-specific mass-property calculation lives in `TailGeometryGroup`, so
+  the beam model responds to the active tail backend instead of duplicating VTP
+  geometry logic here.
 - The VTP inertia contributes through the spanwise mass model.
 
 `strength_margins.py`

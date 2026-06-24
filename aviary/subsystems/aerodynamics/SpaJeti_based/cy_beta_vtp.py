@@ -214,19 +214,19 @@ class CyBetaVtp(om.ExplicitComponent):
             'fuselage_vtp_span_ratio',
             val=0.5,
             units='unitless',
-            desc='2*r_i/b_v: fuselage depth over VTP full span (from HTailGeometry)',
+            desc='2*r_i/b_v: fuselage depth over VTP full span (from tail geometry)',
         )
-        # vtp_ar and vtp_area come from HTailGeometry (plain names, not Aviary
+        # vtp_ar and vtp_area come from tail geometry (plain names, not Aviary
         # variables) so they track the VTP span design variable without
         # conflicting with the FLOPS pre-mission IndepVarComp.
-        self.add_input('vtp_ar',   val=1.2,  units='unitless', desc='VTP aspect ratio from HTailGeometry')
-        self.add_input('vtp_area', val=0.08, units='m**2',     desc='VTP panel area from HTailGeometry')
+        self.add_input('vtp_ar',   val=1.2,  units='unitless', desc='VTP aspect ratio from tail geometry')
+        self.add_input('vtp_area', val=0.08, units='m**2',     desc='VTP panel area from tail geometry')
         add_aviary_input(self, Aircraft.VerticalTail.SWEEP, units='deg')
         self.add_input(
             'wing_ref_area',
             val=0.45,
             units='m**2',
-            desc='Wing reference area (from HTailGeometry)',
+            desc='Wing reference area (from tail geometry)',
         )
         # HTP and fuselage inputs for Figures 10.17 and 10.19
         add_aviary_input(self, Aircraft.HorizontalTail.AREA, units='m**2')
@@ -285,6 +285,56 @@ class CyBetaVtp(om.ExplicitComponent):
                         _KV_2RI_BV_GRID, _KV_BH_LF_GRID, _KV_TABLE_2D)
 
         outputs['CY_beta_vtp'] = -2.0 * k_v * cy_beta_eff * (vtp_area / s_ref)
+
+
+class TailCantRotation(om.ExplicitComponent):
+    """Rotate physical-panel lift slope into body-axis stability derivatives.
+
+    For N symmetric panels at cant angle φ from horizontal:
+
+        CY_beta_tail  = -N × sin²(φ) × CL_alpha_panel × S_panel / S_ref
+        CL_alpha_tail =  N × cos²(φ) × CL_alpha_panel × S_panel / S_ref
+
+    Limiting cases:
+        φ = 90°  (pure VTP):  CY_beta_tail full, CL_alpha_tail = 0
+        φ = 0°   (pure HTP):  CY_beta_tail = 0,  CL_alpha_tail full
+        φ = 45°  (X-tail):    equal lateral and longitudinal authority
+
+    For asymmetric tails, replace tail_cant_angle with a per-panel array and
+    sum sin²/cos² over the array — this component stays unchanged.
+    """
+
+    def setup(self):
+        self.add_input('CL_alpha_panel', val=2.5, units='unitless',
+                       desc='Physical panel lift slope from Polhamus [per rad]')
+        self.add_input('tail_physical_panel_area', val=0.08, units='m**2',
+                       desc='True single-panel planform area')
+        self.add_input('tail_cant_angle', val=45.0, units='deg',
+                       desc='Panel cant angle from horizontal plane')
+        self.add_input('tail_panel_count', val=4.0, units='unitless',
+                       desc='Number of panels')
+        self.add_input('wing_ref_area', val=0.45, units='m**2',
+                       desc='Wing reference area S_ref')
+
+        self.add_output('CY_beta_tail', val=-1.0, units='unitless',
+                        desc='dCY/dbeta from tail, body axes [/rad], negative = stabilising')
+        self.add_output('CL_alpha_tail', val=1.0, units='unitless',
+                        desc='dCL/dalpha from tail, body axes [/rad]')
+
+    def setup_partials(self):
+        self.declare_partials('*', '*', method='cs')
+
+    def compute(self, inputs, outputs):
+        phi   = inputs['tail_cant_angle'] * (np.pi / 180.0)
+        N     = inputs['tail_panel_count']
+        CL_a  = inputs['CL_alpha_panel']
+        S_p   = inputs['tail_physical_panel_area']
+        S_ref = inputs['wing_ref_area']
+
+        authority = N * CL_a * S_p / S_ref
+
+        outputs['CY_beta_tail']  = -authority * np.sin(phi) ** 2
+        outputs['CL_alpha_tail'] =  authority * np.cos(phi) ** 2
 
 
 class CyBetaWing(om.ExplicitComponent):
@@ -403,7 +453,7 @@ class CyBetaFuselage(om.ExplicitComponent):
         add_aviary_input(self, Aircraft.Fuselage.MAX_WIDTH, units='m')
         self.add_input(
             'wing_ref_area', val=0.45, units='m**2',
-            desc='Wing reference area S_ref (from HTailGeometry)',
+            desc='Wing reference area S_ref (from tail geometry)',
         )
         self.add_input(
             'z_w', val=0.0, units='unitless',
@@ -460,14 +510,14 @@ class CyDeltaRudder(om.ExplicitComponent):
     """
 
     def setup(self):
-        # VTP geometry — vtp_area uses plain name (from HTailGeometry) to avoid
+        # VTP geometry -- vtp_area uses plain name (from tail geometry) to avoid
         # conflict with FLOPS pre-mission IndepVarComp for aircraft:vertical_tail:area.
-        self.add_input('vtp_area', val=0.08, units='m**2', desc='VTP panel area from HTailGeometry')
+        self.add_input('vtp_area', val=0.08, units='m**2', desc='VTP panel area from tail geometry')
         add_aviary_input(self, Aircraft.VerticalTail.TAPER_RATIO, units='unitless')
         add_aviary_input(self, Aircraft.VerticalTail.THICKNESS_TO_CHORD, units='unitless')
         self.add_input(
             'wing_ref_area', val=0.45, units='m**2',
-            desc='Wing reference area (from HTailGeometry)',
+            desc='Wing reference area (from tail geometry)',
         )
 
         # VTP 3-D lift slope — wire from LiftCurveSlopePolhamus (Roskam Eq. 8.22)

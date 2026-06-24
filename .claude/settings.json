@@ -7,7 +7,17 @@
       "Bash(python -c ' *)",
       "PowerShell(python \"C:\\\\Users\\\\DEBREC~1\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Software-Repository-Aviary-clean\\\\38980bd1-4c31-4808-b998-e7b98b0a2963\\\\scratchpad\\\\fix_encoding.py\")",
       "Bash(python -m pytest aviary/subsystems/mass/spajeti_based/ -x -q)",
-      "Bash(python -m aviary.visualization.visualize_fuselage_nose)"
+      "Bash(python -m aviary.visualization.visualize_fuselage_nose)",
+      "Bash(grep -n \"HorizontalTail\\\\|htp_structural_mass\\\\|HTP\" \"/mnt/c/Software/Repository/Aviary_clean/aviary/models/aircraft/horizontal_small_uav/run_horizontal_small_uav.py\" | head -20)",
+      "Read(//mnt/c/Software/Repository/Aviary_clean/aviary/models/aircraft/horizontal_small_uav/**)",
+      "Bash(grep -E \"\\\\.py$\")",
+      "Bash(xargs grep -l \"tail\\\\|empennage\\\\|vtp\\\\|htp\")",
+      "Bash(xargs grep -l \"tail\\\\|htp\\\\|vtp\\\\|empennage\")",
+      "Bash(xargs grep -l \"elevator\\\\|rudder\")",
+      "Bash(python3 -c ' *)",
+      "Bash(python -m pytest aviary/subsystems/aerodynamics/SpaJeti_based/test/test_tail_validation.py -v --tb=short)",
+      "Bash(python -m pytest aviary/subsystems/aerodynamics/SpaJeti_based/test/ -v --tb=short -q)",
+      "Bash(python -m pytest aviary/subsystems/aerodynamics/SpaJeti_based/test/ -q --tb=short)"
     ]
   }
 }

@@ -23,7 +23,7 @@ OUTPUT_ROOT = REPO_ROOT / 'outputs'
 #   patch (x.y.Z) -- bug fix, doc tweak, parameter change
 #   minor (x.Y.0) -- new physics component or constraint
 #   major (X.0.0) -- architectural redesign (new DV set, new EOM, new mission)
-MODEL_VERSION = '1.35.0'
+MODEL_VERSION = '1.39.4'
 PROBLEM_NAME = 'run_horizontal_small_uav_try_v1'
 VERSIONED_RUN_NAME = f'{PROBLEM_NAME}_v{MODEL_VERSION}'
 OUTPUT_DIR = OUTPUT_ROOT / f'{VERSIONED_RUN_NAME}_out'
@@ -95,6 +95,8 @@ RUDDER_DELTA_DEG = 20.0  # max rudder deflection [deg]  (also used as beta)
 VTP_SPAN_INITIAL_M = 0.310  # sqrt(0.08 * 1.2) from original CSV baseline
 VTP_SPAN_LOWER_M = 0.15
 VTP_SPAN_UPPER_M = 0.60
+TAIL_TYPE = 'x_tail'
+TAIL_CANT_ANGLE_DEG = 45.0  # X-tail panel cant angle from horizontal
 
 # ── Scholz winglet AR correction parameters ───────────────────────────────────
 # k_WL reference values (Scholz 2018):
@@ -133,7 +135,7 @@ WING_SURFACE_CFG = SurfaceConfig(
 VTP_SURFACE_CFG = SurfaceConfig(
     name='vtp',
     airfoil=VTP_AIRFOIL,
-    has_control_surface=True,
+    has_control_surface=False,
 )
 
 # ── Constraint lower bounds ───────────────────────────────────────────────────
@@ -207,8 +209,39 @@ DIVE_SPEED_FACTOR = 1.25
 # Note: legacy_scalar is not a full pre-spanwise rollback. The Step-3 spanwise
 # wingbox, Schrenk loads, spanwise mass, and equivalent-property components still
 # run because SpaJetiMassGroup and the scalar divergence screen consume them.
-AEROELASTIC_FLUTTER_MODEL = 'none'
+AEROELASTIC_FLUTTER_MODEL = 'legacy_scalar'
 # AERO_REQUIRED_SPEED_MS is computed at runtime: DIVE_SPEED_FACTOR * (550.0 / 3.6)
 
+# ── BeamModalFlutter resolution for optimization ─────────────────────────────
+# Reducing num_speed_samples from 80→20 and pk_iterations from 30→15 cuts each
+# compute() call by ~8x.  The initial flutter-search bracket widens from
+# V_max/80 to V_max/20, but the bisection (kept at 32 steps → 2^-32 precision)
+# still converges to sub-millimetre accuracy after the bracket is found.
+# Set AEROELASTIC_FLUTTER_MODEL = 'beam_modal_3dof_pk' to activate these options.
+AEROELASTIC_SPEED_SAMPLES  = 20   # speed scan points (BeamModalFlutter default: 80)
+AEROELASTIC_BISECTION_ITER = 32   # bisection steps — keep 32 for sub-μm accuracy
+AEROELASTIC_PK_ITERATIONS  = 15   # P-K reduced-frequency iterations (default: 30)
+
+# ── Total Jacobian coloring cache ─────────────────────────────────────────────
+# When True, the first run computes and saves the total-Jacobian sparsity
+# coloring to OUTPUT_ROOT/<run_name>_coloring.pkl (outside OUTPUT_DIR so it
+# survives the output-directory wipe at the start of each run).  Subsequent
+# runs load the cached coloring and skip the expensive sparsity computation
+# (which took ~600 s with BeamModalFlutter active in v1.33).
+USE_COLORING_CACHE = True
+
 # ── Output detail flag ────────────────────────────────────────────────────────
-PRINT_AERO_DETAIL = True  # set False to suppress the wing/VTP/rudder aero breakdown
+PRINT_AERO_DETAIL = True   # set False to suppress the wing/VTP/rudder aero breakdown
+PRINT_NAN_INF_GUARD = False  # set True to scan every model output for NaN/Inf after solve
+
+# Gradient-robustness diagnostics (TOOD.md "Gradient robustness" section).
+# Both flags trigger a run_model() solve at the stated DV point(s) followed by
+# check_totals(method='cs').  They do NOT run the optimizer; set independently.
+#
+# RUN_CHECK_TOTALS   — check_totals() at the interior DV mid-point after the
+#                      normal optimization finishes.  Rel error > 1e-4 flags a
+#                      broken gradient path.
+# RUN_BOUNDS_SENSITIVITY — check_totals() at lower AND upper DV bounds as well.
+#                          Ratio > 10x vs interior baseline flags a kink at the bound.
+RUN_CHECK_TOTALS       = False
+RUN_BOUNDS_SENSITIVITY = False

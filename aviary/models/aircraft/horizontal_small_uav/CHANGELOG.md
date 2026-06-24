@@ -1,5 +1,322 @@
 # SpaJeti v1.0.0 H-wing - Model Changelog
 
+## v1.39.4 - 2026-06-24 - Tail/fuselage wetted-area cutout accounting
+
+- X-tail parasite drag now uses exposed tail wetted area only:
+  fuselage-buried panel area is removed from each physical panel before the
+  two-sided wetted area is formed.
+- Added live `tail_fuselage_cutout_area` accounting from `XTailGeometry`:
+  `N_panels * K_tail * (t/c)_tail * c_root^2`.
+- `FuselageExposedWettedAreaComp` now subtracts `tail_fuselage_cutout_area` in
+  addition to the existing two wing airfoil cutouts, avoiding double-counted
+  fuselage/tail intersection skin.
+- Validation:
+  - Tail geometry and tail validation tests passed.
+  - Full horizontal-small-UAV `run_model` smoke test passed.
+
+Versioning note:
+- `PATCH` bump - corrects wetted-area bookkeeping for parasite drag.
+
+---
+
+## v1.39.3 - 2026-06-24 - Tail drag keeps endplate factor only
+
+- Reverted the `component_kind='vtp'` interference equation so tail parasite drag
+  uses `tail_drag_interference_factor` without the fuselage `R_wf` multiplier.
+- Kept `tail_drag_interference_factor` in the `TailGeometryGroup` contract so the
+  current X-tail and future H-tail backends can own the tail/endplate junction
+  factor. The current X-tail value remains `1.04`.
+- Updated regression coverage and documentation for the tail CD0 equation.
+
+Versioning note:
+- `PATCH` bump - corrects the tail parasite-drag interference convention.
+
+---
+
+## v1.39.2 - 2026-06-24 - Tail parasite drag includes fuselage interference
+
+- Added `tail_drag_interference_factor` to the `TailGeometryGroup` drag contract.
+  The current X-tail backend publishes `1.04`.
+- Changed `RoskamParasiteDragBuildUp` so `component_kind='vtp'` uses
+  `R_wf * tail_drag_interference_factor` instead of bypassing fuselage
+  interference.
+- `RoskamAeroBuilder` now exposes `tail_drag_interference_factor` as a mission
+  parameter so the tail geometry backend owns the tail layout factor.
+- Added regression coverage for the X-tail interference factor and the tail CD0
+  equation.
+
+Versioning note:
+- `PATCH` bump - corrects the tail parasite-drag interference model.
+
+---
+
+## v1.39.1 - 2026-06-24 - Lifting-surface drag length uses MAC
+
+- Changed parasite-drag characteristic lengths for lifting surfaces to use
+  trapezoidal mean aerodynamic chord:
+  `c_MAC = (2/3) * c_root * (1 + lambda + lambda^2) / (1 + lambda)`.
+- `XTailGeometry` now publishes `tail_drag_characteristic_length` as the
+  physical tail panel MAC instead of the physical panel area/span average.
+- `_GeomArrayAssembler` now consumes the live `wing_c_mac` output from
+  `MACGeometryComp` for the wing drag Reynolds-number length instead of
+  reconstructing `Aircraft.Wing.AREA / Aircraft.Wing.SPAN`.
+- `RoskamAeroBuilder` now declares `wing_c_mac` as a mission parameter so the
+  pre-mission wing geometry output feeds all mission parasite-drag phases.
+- Documentation and tests updated for the MAC characteristic-length contract.
+
+Versioning note:
+- `PATCH` bump - corrects the drag Reynolds-number characteristic length without
+  adding a new subsystem or optimizer constraint.
+
+---
+
+## v1.39.0 - 2026-06-24 - Tail volume coefficient data outputs
+
+- Added tail volume coefficient data outputs to `XTailGeometry`:
+  - `tail_aero_center_x`;
+  - `tail_aero_horizontal_moment_arm`;
+  - `tail_aero_vertical_moment_arm`;
+  - `tail_aero_horizontal_volume_coefficient`;
+  - `tail_aero_vertical_volume_coefficient`.
+- Added `tail_volume_reference_x_cg` input as the reference CG station for the
+  moment-arm calculation. It defaults independently so the current mass model
+  does not create a geometry -> mass -> geometry cycle.
+- The X-tail backend uses the physical panel quarter-chord station as the tail
+  aerodynamic center and the existing projected `tail_aero_*_area` outputs for
+  `V_h` and `V_v`.
+- Validation:
+  - SpaJeti tail geometry tests passed.
+  - Full `horizontal_small_uav` `run_model` smoke test passed.
+
+Versioning note:
+- `MINOR` bump - adds public tail sizing data outputs without changing the
+  optimizer constraints yet.
+
+---
+
+## v1.38.0 - 2026-06-24 - Helmbold low-AR blend + CL_alpha_total in fuselage drag
+
+### Tail parasite drag API contract
+
+- Added formal `TailGeometryGroup` parasite-drag outputs:
+  - `tail_drag_wetted_area`;
+  - `tail_drag_characteristic_length`.
+- For the current X-tail backend these are aliases of the existing physical
+  wetted area and physical panel mean chord:
+  `tail_drag_wetted_area = tail_physical_wetted_area` and
+  `tail_drag_characteristic_length = tail_panel_avg_chord`.
+- Updated `_GeomArrayAssembler` and `RoskamAeroBuilder` to consume the formal
+  `tail_drag_*` contract instead of the ad-hoc
+  `tail_physical_wetted_area` / `tail_panel_avg_chord` pair.
+- Physics impact should be neutral for the current X-tail; the change makes the
+  parasite-drag API stable for future tail backends.
+
+### Helmbold-Polhamus smooth blend (`lift_curve_slope.py`)
+
+`LiftCurveSlopePolhamus` now uses a tanh-based blend between the Helmbold formula
+(low AR, sweep term removed) and the full Polhamus/DATCOM formula (high AR, full
+sweep term). This improves accuracy for the X-tail VTP panels (AR ≈ 1.2–2.0)
+where Polhamus over-predicts CL_alpha by 10–20% relative to measured data.
+
+Formula:
+```
+w_H = 0.5 · (1 − tanh(2 · (AR − 3)))     # 1 at low AR, 0 at high AR
+inner = AR²/k² · (β² + (1 − w_H) · tan²Λ_c/2) + 4
+CL_alpha = K_wf · 2π · AR / (2 + √inner)
+```
+
+At AR ≤ 2 (VTP panels): w_H ≈ 1, sweep term vanishes → Helmbold.
+At AR ≥ 5 (main wing): w_H ≈ 0, full sweep term → Polhamus.
+
+The stale `AR < 2.0` RuntimeWarning is removed; a new warning fires only at
+AR < 0.5 where slender-body theory is more appropriate.
+
+UAV numerical example at design point (AR=1.2, M=0.477, sweep=20°, NACA 0012):
+```
+Old (Polhamus + sweep): CL_alpha_panel ≈ 1.93 /rad  (sweep inflates estimate)
+New (Helmbold, no sweep): CL_alpha_panel ≈ 1.93 /rad  (near-identical at AR=1.2)
+```
+At AR=1.2 the sweep correction is numerically negligible (w_H ≈ 0.999); the blend
+primarily removes the spurious AR < 2 warning and provides a physically correct
+formula for any surface in the 0.5–10 AR range.
+
+### `_FuselageMissionLiftDrag` now uses `CL_alpha_total` (`roskam_aero_group.py`)
+
+The fuselage lift-induced drag component previously computed:
+```
+alpha = CL / wing_CL_alpha
+```
+Now uses:
+```
+alpha = CL / CL_alpha_total   (wing_CL_alpha + CL_alpha_tail)
+```
+
+At φ=45° cant, CL_alpha_total ≈ 5.21/rad vs wing_CL_alpha ≈ 4.60/rad, so alpha
+is now ≈ 12% lower. CDI_fus scales as α² and α³, reducing its overestimate by
+~25–40%. CDI_fus is ~0.5% of cruise CD so the absolute range impact is small
+but the physics is now correct.
+
+Changes: `_FuselageMissionLiftDrag.wing_CL_alpha` input renamed to
+`CL_alpha_total`; `RoskamMissionAeroGroup` promotes `CL_alpha_total`;
+`RoskamAeroBuilder.mission_inputs()` and `get_parameters()` updated.
+
+### Optimization result (legacy_scalar flutter, ISA 5000 m)
+
+| Metric | v1.38.0 |
+|--------|---------|
+| Range | 59.04 km |
+| Wing span | 1.365 m |
+| Wing area | 0.402 m² |
+| VTP span | 0.349 m |
+| Wing t/c | 0.1344 |
+| Ny | 7.09 [≥7] |
+| Nz | 33.55 [≥7] |
+| Divergence margin | 717 m/s |
+| λ_max (flutter) | −5.60 1/s [≤0] |
+
+---
+
+## v1.37.0 - 2026-06-24 - TailCantRotation: cant-angle decomposition of tail lift slope
+
+Replaced the H-tail-specific `CyBetaVtp` / `CyDeltaRudder` path in `VTPSurface`
+with a general cant-angle decomposition that works for any X-tail cant angle φ.
+
+### TailCantRotation component (`cy_beta_vtp.py`)
+
+New `TailCantRotation(om.ExplicitComponent)` decomposes the physical-panel Polhamus
+lift slope into body-axis stability derivatives:
+
+```
+CY_beta_tail  = -N × sin²(φ) × CL_alpha_panel × S_panel / S_ref
+CL_alpha_tail =  N × cos²(φ) × CL_alpha_panel × S_panel / S_ref
+```
+
+Limiting cases: φ=90° (pure VTP → CY only), φ=0° (pure HTP → CL only),
+φ=45° X-tail (equal lateral/longitudinal authority, N=4 × 50% each).
+
+Inputs:
+
+| Variable | Default | Units |
+|----------|---------|-------|
+| `CL_alpha_panel` | 2.5 | unitless (1/rad) |
+| `tail_physical_panel_area` | 0.08 | m² |
+| `tail_cant_angle` | 45.0 | deg |
+| `tail_panel_count` | 4.0 | — |
+| `wing_ref_area` | 0.45 | m² |
+
+Outputs: `CY_beta_tail`, `CL_alpha_tail` (both 1/rad, body-axis signed).
+
+UAV numerical example (N=4, φ=45°, CL_alpha_panel=1.72/rad, S_panel=0.08m², S_ref=0.45m²):
+
+```
+authority = 4 × 1.72 × 0.08 / 0.45 = 1.2213
+CY_beta_tail  = −1.2213 × sin²(45°) = −0.6107 /rad
+CL_alpha_tail = +1.2213 × cos²(45°) = +0.6107 /rad
+```
+
+### VTPSurface wiring
+
+`VTPSurface._setup_derivatives()` now adds `TailCantRotation` instead of
+`CyBetaVtp` + `CyDeltaRudder`.  The surface AR input at call site was changed
+from `tail_aero_vertical_ar` (projected) to `tail_panel_ar` (physical), so
+Polhamus sees the correct physical panel AR.  Outputs promoted:
+`CY_beta_tail`, `CL_alpha_tail`.
+
+### LateralLoadFactor
+
+Updated to consume `CY_beta_tail` (from `TailCantRotation`) instead of
+`CY_beta_vtp`.  `CY_delta_r` and `delta_r_deg` inputs removed (fixed tail,
+no rudder).  `has_control_surface = False` set in `VTP_SURFACE_CFG`.
+
+### CL_alpha_tail wired into LongitudinalLoadFactor
+
+Added `total_cl_alpha` ExecComp in `run_horizontal_small_uav.py`:
+
+```
+CL_alpha_total = wing_CL_alpha + CL_alpha_tail
+```
+
+`LongitudinalLoadFactor` now receives `CL_alpha_total` instead of
+`wing_CL_alpha` alone, so the tail's body-axis lift contribution (= lateral
+authority at 45° cant) is included in the Nz structural constraint.
+
+### Drag characteristic length fix
+
+`_GeomArrayAssembler` in `RoskamMissionAeroGroup` now uses `tail_panel_avg_chord`
+(panel area / panel span) as the VTP characteristic length for Reynolds number and
+skin-friction drag, replacing `tail_aero_vertical_area / Aircraft.VerticalTail.SPAN`
+which overestimated the chord by N×sin²(φ) = 2× for a 45° X-tail with N=4 panels.
+`RoskamAeroBuilder.get_parameters()` and `mission_inputs()` updated accordingly.
+
+Versioning note:
+- `MINOR` bump — new `TailCantRotation` physics component, corrected drag
+  characteristic length, and tail lift wired into the Nz constraint.
+
+---
+
+## v1.36.0 - 2026-06-24 - Tail-owned CG and inertia equivalents
+
+- Extended `XTailGeometry` with physical tail mass-property outputs:
+  - `tail_physical_x_cg`, `tail_physical_z_cg`;
+  - `tail_physical_cg_x_from_wing_tip_le`, `tail_physical_cg_z_abs`;
+  - `tail_physical_dx_to_elastic_axis`;
+  - `tail_physical_tip_mass_equivalent`;
+  - `tail_physical_tip_pitch_inertia_equivalent`.
+- Moved the remaining VTP-style CG and tip-inertia calculations upstream into
+  the tail geometry boundary so future tail backends can own their layout-specific
+  mass distribution internally.
+- Simplified `VTPStructuralMass` into a compatibility adapter from
+  `tail_physical_structural_mass` and `tail_physical_*_cg` to the current legacy
+  `vtp_structural_mass`, `vtp_x_cg`, and `vtp_z_cg` outputs.
+- Simplified `VTPTipInertia` into a compatibility adapter from geometry-owned
+  tail inertia equivalents to the current `aeroelasticity:vtp_*` outputs.
+- Cleaned stale aircraft-level promotion/default wiring for old VTP mass/inertia
+  inputs.
+- Validation:
+  - SpaJeti tail geometry tests passed;
+  - SpaJeti mass validation tests passed;
+  - aeroelastic VTP inertia adapter tests passed;
+  - full `horizontal_small_uav` `run_model` smoke test passed.
+
+Versioning note:
+- `MINOR` bump - completes the next tail-geometry API step by moving physical
+  CG and inertia-equivalent ownership into the tail geometry module.
+
+---
+
+## v1.35.0 - 2026-06-24 - Tail geometry orchestrator and physical/aero split
+
+- Added `TailGeometryGroup` in `aviary/subsystems/geometry/spajeti_based/tail_geometry.py`
+  as the public tail-geometry boundary for the SpaJeti UAV model.
+- Added the initial `x_tail` backend, `XTailGeometry`, with explicit `tail_type`
+  metadata for future backend selection.
+- Split tail outputs into two stable geometry families:
+  - `tail_physical_*` for true material geometry, wetted area, structural mass,
+    inertia, and future visualization;
+  - `tail_aero_*` for horizontal/vertical aerodynamic-equivalent geometry used
+    by stability and control models.
+- X-tail aero-equivalent areas now use squared direction-cosine projection:
+  `S_vertical = S_physical * sin(cant)^2` and
+  `S_horizontal = S_physical * cos(cant)^2`.
+- Added `tail_areal_density` as a tail-geometry input and compute
+  `tail_physical_structural_mass` inside the tail geometry boundary.
+- Rewired the horizontal-small-UAV model to use `TailGeometryGroup(tail_type='x_tail')`
+  instead of a direct H-tail geometry component.
+- Migrated SpaJeti mass and VTP tip-inertia consumers to use
+  `tail_physical_structural_mass` as the shared physical tail mass source.
+- Removed the duplicate old `flops_based/htail_geometry.py` implementation.
+- Validation:
+  - SpaJeti tail geometry tests passed;
+  - SpaJeti mass tests passed;
+  - aeroelastic VTP inertia tests passed;
+  - full `horizontal_small_uav` `run_model` smoke test passed.
+
+Versioning note:
+- `MINOR` bump - introduces a new tail-geometry architecture and public tail
+  geometry API while preserving compatibility aliases for the current aero path.
+
+---
+
 ## v1.33.7 - 2026-06-23 - Fix CDi / span-efficiency CL inconsistency (TOOD item 9)
 
 - `span_eff_correction` ExecComp in `run_horizontal_small_uav.py` changed from
